@@ -1,111 +1,140 @@
-"""Стрельба: MAR с магазином, пули десантника, кислота жуков, удар с орбиты."""
+"""Снаряды и удары по площади: пули всех стволов, взрывы, кислота жуков, удар с орбиты."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from starrun.balance import OrbitalCfg, WeaponCfg
+from starrun.balance import OrbitalCfg
 from starrun.sim.progression import Stats
 from starrun.sim.swarm import Swarm
 
 BULLET_RADIUS = 4.0
 
+# Вид снаряда — для отрисовки
+BULLET, PELLET, SNIPER, ROCKET, GRENADE, TURRET_SHOT = range(6)
 
-class Gun:
-    """Темп стрельбы и магазин. Сколько выстрелов в кадре — решает здесь, куда — мир."""
 
-    def __init__(self, cfg: WeaponCfg) -> None:
-        self.cfg = cfg
-        self.cooldown = 0.0
-        self.ammo = cfg.magazine
-        self.reload_left = 0.0
+@dataclass
+class Explosion:
+    pos: np.ndarray
+    radius: float
+    damage: float
+    knock: float = 0.0
+    cluster: int = 0            # сколько малых зарядов разлетится (кассета)
+    cluster_damage: float = 0.0
+    cluster_radius: float = 0.0
 
-    def magazine(self, stats: Stats) -> int:
-        return max(1, round(self.cfg.magazine * stats["ammo_mult"]))
 
-    @property
-    def reloading(self) -> bool:
-        return self.reload_left > 0
+@dataclass
+class Impacts:
+    """Итог полёта пуль за кадр: прямые попадания и взрывы."""
 
-    def update(self, dt: float, stats: Stats, has_target: bool) -> int:
-        if self.reloading:
-            self.reload_left -= dt * stats["reload_mult"]
-            if self.reload_left <= 0:
-                self.reload_left = 0.0
-                self.ammo = self.magazine(stats)
-            return 0
-        self.cooldown -= dt
-        if not has_target:
-            self.cooldown = max(self.cooldown, 0.0)  # без цели темп не копится
-            return 0
-        interval = 1 / (self.cfg.fire_rate * stats["mar_rate"])
-        shots = 0
-        while self.cooldown <= 0 and self.ammo > 0:
-            shots += 1
-            self.ammo -= 1
-            self.cooldown += interval
-        if self.ammo == 0:
-            self.reload_left = self.cfg.reload
-        return shots
+    bug: np.ndarray = field(default_factory=lambda: np.empty(0, np.int64))
+    damage: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
+    knock: np.ndarray = field(default_factory=lambda: np.empty((0, 2), np.float32))
+    burn_time: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
+    burn_dps: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
+    explosions: list[Explosion] = field(default_factory=list)
 
 
 class Bullets:
-    def __init__(self, capacity: int = 1024) -> None:
+    def __init__(self, capacity: int = 2048) -> None:
         self.pos = np.zeros((capacity, 2), np.float32)
         self.vel = np.zeros((capacity, 2), np.float32)
         self.life = np.zeros(capacity, np.float32)
         self.damage = np.zeros(capacity, np.float32)
         self.pierce = np.zeros(capacity, np.int16)
         self.last_hit = np.full(capacity, -1, np.int32)
+        self.kind = np.zeros(capacity, np.int8)
+        self.blast = np.zeros(capacity, np.float32)       # радиус взрыва; 0 — обычная пуля
+        self.knock = np.zeros(capacity, np.float32)
+        self.burn_time = np.zeros(capacity, np.float32)
+        self.burn_dps = np.zeros(capacity, np.float32)
+        self.cluster = np.zeros(capacity, np.int8)
+        self.cluster_damage = np.zeros(capacity, np.float32)
+        self.cluster_radius = np.zeros(capacity, np.float32)
         self.alive = np.zeros(capacity, bool)
 
-    def fire(self, origin: np.ndarray, directions: np.ndarray, speed: float, damage: np.ndarray,
-             pierce: int, life: float) -> None:
+    def fire(self, origin: np.ndarray, directions: np.ndarray, speed: float, damage: np.ndarray | float,
+             life: float, *, pierce: int = 0, kind: int = BULLET, blast: float = 0.0, knock: float = 0.0,
+             burn: tuple[float, float] = (0.0, 0.0), cluster: tuple[int, float, float] = (0, 0.0, 0.0)) -> None:
         free = np.flatnonzero(~self.alive)[: len(directions)]
         n = len(free)
         self.pos[free] = origin
         self.vel[free] = directions[:n] * speed
         self.life[free] = life
-        self.damage[free] = damage[:n]
+        self.damage[free] = np.broadcast_to(np.asarray(damage, np.float32), (len(directions),))[:n]
         self.pierce[free] = pierce
         self.last_hit[free] = -1
+        self.kind[free] = kind
+        self.blast[free] = blast
+        self.knock[free] = knock
+        self.burn_time[free], self.burn_dps[free] = burn
+        self.cluster[free], self.cluster_damage[free], self.cluster_radius[free] = cluster
         self.alive[free] = True
 
-    def step(self, dt: float, swarm: Swarm) -> tuple[np.ndarray, np.ndarray]:
-        """Полёт и попадания; возвращает (номера жуков, урон). Пуля за кадр бьёт одного — ближайшего."""
+    def _explode(self, b: np.ndarray, out: Impacts) -> None:
+        for i in b:
+            out.explosions.append(Explosion(self.pos[i].copy(), float(self.blast[i]), float(self.damage[i]),
+                                            float(self.knock[i]), int(self.cluster[i]),
+                                            float(self.cluster_damage[i]), float(self.cluster_radius[i])))
+        self.alive[b] = False
+
+    def step(self, dt: float, swarm: Swarm) -> Impacts:
+        """Полёт и попадания. Пуля за кадр бьёт одного — ближайшего; снаряд со взрывом рвётся при касании
+        или в конце полёта (ракета долетает до точки цели)."""
+        out = Impacts()
+        start = self.pos.copy()
         self.pos += self.vel * dt
         self.life -= dt
+        expired = self.alive & (self.life <= 0)
+        self._explode(np.flatnonzero(expired & (self.blast > 0)), out)
         self.alive &= self.life > 0
         b = np.flatnonzero(self.alive)
         bugs = swarm.alive_idx
-        empty = np.empty(0, np.int64), np.empty(0, np.float32)
         if not len(b) or not len(bugs):
-            return empty
-        # Пуль в полёте десятки — попарная проверка с жуками дешевле любой структуры
-        d2 = ((self.pos[b][:, None, :] - swarm.pos[bugs][None, :, :]) ** 2).sum(-1)
+            return out
+        # Пуль в полёте десятки — попарная проверка с жуками дешевле любой структуры.
+        # Проверяется отрезок полёта за кадр, а не точка: снайперская пуля проходит 40+ px за кадр
+        # и иначе проскочила бы жука насквозь.
+        p0 = start[b][:, None, :]
+        seg = (self.pos[b] - start[b])[:, None, :]
+        rel = swarm.pos[bugs][None, :, :] - p0
+        t = np.clip((rel * seg).sum(-1) / ((seg**2).sum(-1) + 1e-9), 0, 1)
+        d2 = ((rel - seg * t[..., None]) ** 2).sum(-1)
         hit = d2 < (swarm.radius[bugs][None, :] + BULLET_RADIUS) ** 2
         hit &= bugs[None, :] != self.last_hit[b][:, None]
         any_hit = hit.any(1)
         if not any_hit.any():
-            return empty
-        first = np.argmin(np.where(hit, d2, np.inf), 1)
+            return out
+        first = np.argmin(np.where(hit, t, np.inf), 1)  # первый на пути, а не ближайший к концу отрезка
         hb = b[any_hit]
         bug = bugs[first[any_hit]]
-        damage = self.damage[hb].copy()
+        # Снаряд останавливается в точке попадания: взрыв там, следующий жук — со следующего кадра
+        self.pos[hb] = start[hb] + (self.pos[hb] - start[hb]) * t[any_hit, first[any_hit], None]
+        boom = self.blast[hb] > 0
+        self._explode(hb[boom], out)
+        hb, bug = hb[~boom], bug[~boom]
+        speed = np.linalg.norm(self.vel[hb], axis=1, keepdims=True) + 1e-6
+        out.bug = bug
+        out.damage = self.damage[hb].copy()
+        out.knock = self.vel[hb] / speed * self.knock[hb, None]
+        out.burn_time = self.burn_time[hb].copy()
+        out.burn_dps = self.burn_dps[hb].copy()
         self.last_hit[hb] = bug
         self.pierce[hb] -= 1
         self.alive[hb] &= self.pierce[hb] >= 0
-        return bug, damage
+        return out
 
 
 class Acid:
-    """Плевки королевы: летят по прямой, бьют десантника при касании."""
+    """Плевки королевы и стрелков: летят по прямой, бьют десантника при касании."""
 
     RADIUS = 10.0
 
-    def __init__(self, capacity: int = 256) -> None:
+    def __init__(self, capacity: int = 512) -> None:
         self.pos = np.zeros((capacity, 2), np.float32)
         self.vel = np.zeros((capacity, 2), np.float32)
         self.life = np.zeros(capacity, np.float32)

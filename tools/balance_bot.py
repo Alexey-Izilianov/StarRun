@@ -23,7 +23,9 @@ from starrun.sim.world import Controls, World
 DT = 1 / 30
 DANGER = 260.0     # ближе этого жуки — только отходить
 SEE = 420.0        # от кого вообще уклоняться
-PRIORITY = ("mar_damage", "mar_rate", "damage", "max_hp", "regen", "speed", "pickup", "mar_pierce", "reload")
+PRIORITY = ("mod:", "_damage", "damage", "_rate", "max_hp", "new:", "regen", "speed", "pickup", "reload")
+CLOSE = ("flame", "shotgun", "shock")        # чем отбиваться, когда жуки рядом
+FAR = ("rocket", "mar", "shock", "sniper", "turret")  # турель сама не стреляет — в последнюю очередь
 
 
 def steer(w: World) -> tuple[float, float]:
@@ -63,7 +65,7 @@ def steer(w: World) -> tuple[float, float]:
     if boss is not None and not near.any():  # спокойно — к боссу, пока он не в радиусе MAR
         v = w.swarm.pos[boss] - pos
         n = np.linalg.norm(v)
-        if n > w.balance.mar.range * 0.8:
+        if n > w.weapon.reach(w) * 0.8:
             return tuple(v / n)  # type: ignore[return-value]
     if w.evac_pos is not None:
         v = w.evac_pos - pos
@@ -101,9 +103,32 @@ def pick(w: World) -> int:
     offers = w.offer()
     for want in PRIORITY:
         for i, o in enumerate(offers):
-            if o.upgrade.id == want:
+            uid = o.upgrade.id
+            prefix = want.endswith(":") and uid.startswith(want)    # mod:*, new:*
+            suffix = want.startswith("_") and uid.endswith(want)    # *_damage, *_rate
+            if uid == want or prefix or suffix:
                 return i
     return 0
+
+
+def weapon_slot(w: World) -> int | None:
+    """Ствол по обстановке: основной — самый прокачанный; вблизи — ствол по площади, если он не слабее
+    основного больше чем на уровень; на босса — снайперка такого же уровня."""
+    levels = [x.level + 2 * x.mod for x in w.weapons]
+    best = max(levels)
+    owned = [x.id for x in w.weapons]
+
+    def usable(wid: str) -> bool:
+        return wid in owned and levels[owned.index(wid)] >= best - 1
+
+    if w.nearest_boss(1000) is not None and usable("sniper"):
+        return owned.index("sniper")
+    if in_danger(w):
+        for wid in CLOSE:
+            if usable(wid):
+                return owned.index(wid)
+    candidates = [i for i, x in enumerate(w.weapons) if x.id != "turret" and levels[i] == best]
+    return candidates[0] if candidates else levels.index(best)
 
 
 def run(balance: Balance, seed: int, minutes: float) -> dict[str, float | str]:
@@ -112,9 +137,11 @@ def run(balance: Balance, seed: int, minutes: float) -> dict[str, float | str]:
         if w.awaiting_choice:
             w.choose(pick(w))
             continue
-        w.step(DT, Controls(move=steer(w), sprint=in_danger(w), ability_target=strike_target(w)))
+        w.step(DT, Controls(move=steer(w), sprint=in_danger(w), ability_target=strike_target(w),
+                            select=weapon_slot(w)))
     return {"result": w.session.phase.name, "minute": w.session.elapsed / 60, "level": w.progress.level,
-            "kills": sum(w.kills.values()), "queen": w.session.phase in (Phase.EVAC, Phase.VICTORY)}
+            "kills": sum(w.kills.values()), "queen": w.session.phase in (Phase.EVAC, Phase.VICTORY),
+            "weapons": " ".join(f"{x.id}{x.level}{'*' if x.mod else ''}" for x in w.weapons)}
 
 
 def main() -> None:
@@ -130,7 +157,7 @@ def main() -> None:
         r = run(balance, seed, args.minutes)
         results.append(r)
         print(f"seed {seed}: {r['result']:8s} мин {r['minute']:5.1f}  уровень {r['level']:2d}  убито {r['kills']:5d}"
-              f"  ({time.perf_counter() - t:.0f} с)", flush=True)
+              f"  оружие {r['weapons']}  ({time.perf_counter() - t:.0f} с)", flush=True)
     minutes = [float(r["minute"]) for r in results]
     wins = sum(r["result"] == "VICTORY" for r in results)
     print(f"итого: побед {wins}/{len(results)}, средняя минута конца {statistics.fmean(minutes):.1f}, "

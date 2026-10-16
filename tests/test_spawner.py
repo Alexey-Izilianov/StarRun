@@ -23,21 +23,36 @@ def test_rush_comes_from_one_side(rng: np.random.Generator) -> None:
     assert np.allclose(pos[:, 0], CENTER[0] - HALF[0] - 80)
 
 
+def make(balance: Balance, rng: np.random.Generator) -> Spawner:
+    return Spawner(balance.spawn, balance.mix, rng, {"flyer": (5, 8)})
+
+
 def test_population_ramps_to_full_and_respects_cap(balance: Balance, rng: np.random.Generator) -> None:
-    sp = Spawner(balance.spawn, rng)
+    sp = make(balance, rng)
     assert sp.target_population(0) == balance.spawn.start_population
     assert sp.target_population(balance.spawn.full_minute * 60) == balance.spawn.full_population
     assert sp.target_population(10_000) <= balance.spawn.cap
 
 
-def test_warriors_only_after_their_minute(balance: Balance, rng: np.random.Generator) -> None:
-    sp = Spawner(balance.spawn, rng)
-    assert sp.warrior_share(60) == 0
-    assert sp.warrior_share(balance.spawn.warrior_share_minute * 60) == pytest.approx(balance.spawn.warrior_share_max)
+def test_kinds_join_the_crowd_on_their_minute(balance: Balance, rng: np.random.Generator) -> None:
+    sp = make(balance, rng)
+    for m in balance.mix:
+        assert sp.share(m.kind, m.from_minute * 60 - 1) == 0
+        assert sp.share(m.kind, m.full_minute * 60) == pytest.approx(m.share)
+    late = [k for k, _ in sp._split(2000, 20 * 60, CENTER, HALF)]
+    assert set(late) == {"worker", "warrior", "spitter", "flyer", "tanker", "brain"}
+
+
+def test_flyers_come_in_flocks(balance: Balance, rng: np.random.Generator) -> None:
+    sp = make(balance, rng)
+    flyers = next(p for k, p in sp._split(400, 20 * 60, CENTER, HALF) if k == "flyer")
+    # у каждого летающего есть сосед по стае ближе 150 px
+    d = np.linalg.norm(flyers[:, None] - flyers[None], axis=-1) + np.eye(len(flyers)) * 1e9
+    assert (d.min(1) < 150).all()
 
 
 def test_spawn_rate_is_limited_and_tops_up_population(balance: Balance, rng: np.random.Generator) -> None:
-    sp = Spawner(balance.spawn, rng)
+    sp = make(balance, rng)
     alive, t, dt = 0, 0.0, 1 / 60
     first = sum(len(p) for _, p in sp.update(dt, t, alive, CENTER, HALF))
     assert first <= balance.spawn.max_per_second * dt + 1
@@ -48,7 +63,7 @@ def test_spawn_rate_is_limited_and_tops_up_population(balance: Balance, rng: np.
 
 
 def test_rush_happens_once_per_minute(balance: Balance, rng: np.random.Generator) -> None:
-    sp = Spawner(balance.spawn, rng)
+    sp = make(balance, rng)
     crowd = 300  # больше целевой численности первых минут — обычный спавн молчит, остаётся только налёт
     sizes = [sum(len(p) for _, p in sp.update(0.1, step / 10, crowd, CENTER, HALF)) for step in range(120 * 10)]
     rushes = [s for s in sizes if s >= balance.spawn.rush_base]

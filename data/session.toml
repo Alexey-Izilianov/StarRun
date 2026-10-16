@@ -15,7 +15,7 @@ radius = 180
 
 [spawn]
 start_population = 40
-full_population = 250         # на этапе 1 одна MAR; с оружием по площади (этап 2) — до 380
+full_population = 320
 full_minute = 12
 cap = 400
 max_per_second = 60
@@ -25,14 +25,42 @@ rush_start = 40             # «пила»: 40 с ровного напора, �
 rush_length = 20
 rush_base = 30
 rush_per_minute = 6
-warrior_from_minute = 2
-warrior_share_max = 0.18
-warrior_share_minute = 10
+
+# Состав толпы: доля вида растёт от 0 на from_minute до share на full_minute; остальное — рабочие
+[[mix]]
+kind = "warrior"
+from_minute = 2
+full_minute = 10
+share = 0.15
+
+[[mix]]
+kind = "spitter"
+from_minute = 4
+full_minute = 12
+share = 0.10
+
+[[mix]]
+kind = "flyer"
+from_minute = 6
+full_minute = 12
+share = 0.10
+
+[[mix]]
+kind = "tanker"
+from_minute = 8
+full_minute = 14
+share = 0.05
+
+[[mix]]
+kind = "brain"
+from_minute = 10
+full_minute = 14
+share = 0.02
 
 [xp]
 base = 5                    # опыт до 2-го уровня
-linear = 4
-quad = 0.35
+linear = 3
+quad = 0.3
 
 [[rarity]]
 name = "Обычное"

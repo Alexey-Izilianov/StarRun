@@ -133,7 +133,7 @@ def test_mar_focuses_boss_unless_something_bites(balance: Balance) -> None:
     w = World(balance, seed=8)
     worker = w.swarm.spawn(WORKER, np.array([[300, 0]], np.float32))[0]
     boss = w.swarm.spawn(SEMI_BOSS, np.array([[0, 450]], np.float32))[0]
-    reach = balance.mar.range
+    reach = balance.weapons["mar"].range
     assert w.pick_target(reach) == boss
     w.swarm.pos[worker] = (120, 0)  # рабочий вцепился — сначала он
     w.target = None

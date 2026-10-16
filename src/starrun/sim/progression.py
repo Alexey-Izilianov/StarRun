@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from starrun.balance import Rarity, Upgrade, XpCfg
+from starrun.balance import Rarity, Upgrade, WeaponCfg, XpCfg
+
+MAX_WEAPON_LEVEL = 5
 
 
 class Stats:
@@ -69,8 +71,15 @@ class Offer:
     rarity: Rarity
     rarity_index: int
 
+    @property
+    def special(self) -> str:
+        """"weapon" — новый ствол, "mod" — модификация, "" — обычное улучшение характеристики."""
+        return self.upgrade.mode if self.upgrade.mode in ("weapon", "mod") else ""
+
     def amount(self, common_bonus: float) -> float:
         """Насколько изменится характеристика: доля для mult, абсолютная прибавка для add."""
+        if self.special:
+            return 0.0
         if self.upgrade.mode == "mult":
             return self.rarity.bonus
         value = self.upgrade.value * self.rarity.bonus / common_bonus
@@ -88,15 +97,34 @@ class Upgrades:
 
     pool: tuple[Upgrade, ...]
     rarities: tuple[Rarity, ...]
+    weapons: dict[str, WeaponCfg] = field(default_factory=dict)
     ranks: dict[str, int] = field(default_factory=dict)
     taken: list[Offer] = field(default_factory=list)
 
-    def available(self) -> list[Upgrade]:
-        return [u for u in self.pool if not u.max_rank or self.ranks.get(u.id, 0) < u.max_rank]
+    def available(self, owned: dict[str, tuple[int, bool]] | None = None, free_slot: bool = False) -> list[Upgrade]:
+        """Что можно предложить. owned — стволы в слотах: id → (уровень, есть ли модификация).
+        Улучшения ствола — только пока он в слоте и не достиг 5-го уровня; на 5-м — карточка модификации;
+        пока есть свободный слот — карточки новых стволов."""
+        owned = owned or {}
+        out = []
+        for u in self.pool:
+            if u.max_rank and self.ranks.get(u.id, 0) >= u.max_rank:
+                continue
+            if u.weapon and (u.weapon not in owned or owned[u.weapon][0] >= MAX_WEAPON_LEVEL):
+                continue
+            out.append(u)
+        for wid, cfg in self.weapons.items():
+            if wid not in owned and free_slot:
+                out.append(Upgrade(f"new:{wid}", cfg.name, cfg.text, "", "weapon", "weapon", weapon=wid))
+            elif wid in owned and owned[wid][0] >= MAX_WEAPON_LEVEL and not owned[wid][1]:
+                out.append(Upgrade(f"mod:{wid}", f"{cfg.name}: {cfg.mod_name.lower()}", cfg.mod_text, "", "mod",
+                                   "weapon", weapon=wid))
+        return out
 
-    def offer(self, rng: np.random.Generator, count: int = 3) -> list[Offer]:
+    def offer(self, rng: np.random.Generator, count: int = 3, owned: dict[str, tuple[int, bool]] | None = None,
+              free_slot: bool = False) -> list[Offer]:
         """Три разные карточки: хотя бы одна для оружия и хотя бы одна пассивная, если такие остались."""
-        left = self.available()
+        left = self.available(owned, free_slot)
         picks: list[Upgrade] = []
         for group in ("weapon", "passive"):
             options = [u for u in left if u.group == group and u not in picks]
@@ -113,10 +141,11 @@ class Upgrades:
         return offers
 
     def apply(self, offer: Offer, stats: Stats) -> None:
+        """Меняет характеристику; новый ствол и модификацию ставит мир — здесь только учёт."""
         amount = offer.amount(self.rarities[0].bonus)
         if offer.upgrade.mode == "mult":
             stats.multiply(offer.upgrade.stat, 1 + amount)
-        else:
+        elif offer.upgrade.mode == "add":
             stats.add(offer.upgrade.stat, amount)
         self.ranks[offer.upgrade.id] = self.ranks.get(offer.upgrade.id, 0) + 1
         self.taken.append(offer)

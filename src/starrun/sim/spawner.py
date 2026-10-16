@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from starrun.balance import SpawnCfg
+from starrun.balance import MixCfg, SpawnCfg
 
 SIDES = ("left", "right", "bottom", "top")
 
@@ -35,8 +35,11 @@ def front_side(rng: np.random.Generator, facing: np.ndarray) -> str:
 
 
 class Spawner:
-    def __init__(self, cfg: SpawnCfg, rng: np.random.Generator) -> None:
+    def __init__(self, cfg: SpawnCfg, mix: tuple[MixCfg, ...], rng: np.random.Generator,
+                 flocks: dict[str, tuple[int, int]] | None = None) -> None:
         self.cfg = cfg
+        self.mix = mix
+        self.flocks = flocks or {}  # вид → (мин, макс) размер стаи: такие жуки появляются кучно
         self.rng = rng
         self.budget = 0.0  # накопленное право на спавн, чтобы не выпускать сотню за кадр
         self.rush_side = "top"
@@ -47,13 +50,15 @@ class Spawner:
         t = min(1.0, elapsed / (c.full_minute * 60))
         return min(c.cap, round(c.start_population + (c.full_population - c.start_population) * t))
 
-    def warrior_share(self, elapsed: float) -> float:
-        c = self.cfg
+    def share(self, kind: str, elapsed: float) -> float:
+        """Доля вида в новых жуках на этой минуте забега."""
         minutes = elapsed / 60
-        if minutes < c.warrior_from_minute:
-            return 0.0
-        t = (minutes - c.warrior_from_minute) / max(1e-6, c.warrior_share_minute - c.warrior_from_minute)
-        return c.warrior_share_max * min(1.0, t)
+        for m in self.mix:
+            if m.kind == kind:
+                if minutes < m.from_minute:
+                    return 0.0
+                return m.share * min(1.0, (minutes - m.from_minute) / max(1e-6, m.full_minute - m.from_minute))
+        return 0.0
 
     def in_rush(self, elapsed: float) -> bool:
         return (elapsed % 60) >= self.cfg.rush_start and (elapsed % 60) < self.cfg.rush_start + self.cfg.rush_length
@@ -73,19 +78,35 @@ class Spawner:
             self.rush_side = SIDES[int(self.rng.integers(4))]
             n = min(self.rush_size(elapsed), c.cap - alive)
             if n > 0:
-                batches += self._split(n, elapsed, edge_positions(self.rng, n, center, half, c.margin, self.rush_side))
+                batches += self._split(n, elapsed, center, half, self.rush_side)
                 alive += n
         self.budget = min(self.budget + c.max_per_second * boost * dt, c.max_per_second)
         missing = min(round(self.target_population(elapsed) * boost), c.cap) - alive
         n = int(min(missing, self.budget))
         if n > 0:
             self.budget -= n
-            batches += self._split(n, elapsed, edge_positions(self.rng, n, center, half, c.margin))
+            batches += self._split(n, elapsed, center, half)
         return batches
 
-    def _split(self, n: int, elapsed: float, pos: np.ndarray) -> list[tuple[str, np.ndarray]]:
-        warriors = self.rng.random(n) < self.warrior_share(elapsed)
-        out = [("worker", pos[~warriors])]
-        if warriors.any():
-            out.append(("warrior", pos[warriors]))
-        return [(k, p) for k, p in out if len(p)]
+    def _split(self, n: int, elapsed: float, center: np.ndarray, half: tuple[float, float],
+               side: str | None = None) -> list[tuple[str, np.ndarray]]:
+        """Делит n новых жуков по видам; стайные виды получают общие точки появления."""
+        kinds = ["worker"] + [m.kind for m in self.mix]
+        shares = np.array([self.share(k, elapsed) for k in kinds[1:]])
+        p = np.concatenate([[max(0.0, 1 - shares.sum())], shares])
+        counts = self.rng.multinomial(n, p / p.sum())
+        out: list[tuple[str, np.ndarray]] = []
+        margin = self.cfg.margin
+        for kind, k in zip(kinds, counts, strict=True):
+            if not k:
+                continue
+            if kind in self.flocks:
+                lo, hi = self.flocks[kind]
+                k = max(int(k), lo)  # стая не бывает из одного
+                size = int(self.rng.integers(lo, hi + 1))
+                centers = edge_positions(self.rng, -(-k // size), center, half, margin, side)
+                pos = np.repeat(centers, size, 0)[:k] + self.rng.normal(0, 40, (k, 2)).astype(np.float32)
+            else:
+                pos = edge_positions(self.rng, int(k), center, half, margin, side)
+            out.append((kind, pos))
+        return out

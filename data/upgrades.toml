@@ -1,6 +1,11 @@
 # Улучшения за уровень. mode = "mult": характеристика × (1 + бонус редкости);
 # mode = "add": + value × (бонус редкости / бонус обычной), integer — округлить вверх.
 # group: weapon — оружие и способность, passive — десантник.
+# weapon = "<id>": улучшение конкретного ствола — предлагается, только если он в слоте;
+# каждое такое улучшение поднимает уровень ствола (до 5, на 5-м — карточка модификации).
+# Карточки «Новое оружие» и «Модификация» собираются из weapons.toml сами.
+
+# ---------- десантник ----------
 
 [[upgrade]]
 id = "speed"
@@ -52,10 +57,12 @@ mode = "add"
 value = 0.03
 group = "passive"
 
+# ---------- всё оружие ----------
+
 [[upgrade]]
 id = "damage"
 name = "Тактическая подготовка"
-text = "Общий урон"
+text = "Урон всего оружия"
 stat = "damage_mult"
 mode = "mult"
 group = "weapon"
@@ -63,7 +70,7 @@ group = "weapon"
 [[upgrade]]
 id = "range"
 name = "Баллистический вычислитель"
-text = "Дальность полёта снарядов"
+text = "Дальность всего оружия"
 stat = "range_mult"
 mode = "mult"
 group = "weapon"
@@ -79,45 +86,9 @@ group = "weapon"
 [[upgrade]]
 id = "ammo"
 name = "Расширенный магазин"
-text = "Боезапас"
+text = "Боезапас всего оружия"
 stat = "ammo_mult"
 mode = "mult"
-group = "weapon"
-
-[[upgrade]]
-id = "mar_damage"
-name = "MAR: калибр"
-text = "Урон MAR"
-stat = "mar_damage"
-mode = "mult"
-group = "weapon"
-
-[[upgrade]]
-id = "mar_rate"
-name = "MAR: облегчённый затвор"
-text = "Скорострельность MAR"
-stat = "mar_rate"
-mode = "mult"
-group = "weapon"
-
-[[upgrade]]
-id = "mar_pierce"
-name = "MAR: бронебойные патроны"
-text = "Пуля пробивает ещё одного жука"
-stat = "mar_pierce"
-mode = "add"
-value = 1
-integer = true
-max_rank = 3
-group = "weapon"
-
-[[upgrade]]
-id = "mar_crit"
-name = "MAR: экспансивные пули"
-text = "Шанс двойного урона"
-stat = "mar_crit"
-mode = "add"
-value = 0.05
 group = "weapon"
 
 [[upgrade]]
@@ -135,3 +106,237 @@ text = "Радиус удара с орбиты"
 stat = "orbital_radius"
 mode = "mult"
 group = "weapon"
+
+# ---------- MAR ----------
+
+[[upgrade]]
+id = "mar_damage"
+name = "MAR: калибр"
+text = "Урон MAR"
+stat = "mar_damage"
+mode = "mult"
+group = "weapon"
+weapon = "mar"
+
+[[upgrade]]
+id = "mar_rate"
+name = "MAR: облегчённый затвор"
+text = "Скорострельность MAR"
+stat = "mar_rate"
+mode = "mult"
+group = "weapon"
+weapon = "mar"
+
+[[upgrade]]
+id = "mar_pierce"
+name = "MAR: бронебойные патроны"
+text = "Пуля пробивает ещё одного жука"
+stat = "mar_pierce"
+mode = "add"
+value = 1
+integer = true
+max_rank = 3
+group = "weapon"
+weapon = "mar"
+
+[[upgrade]]
+id = "mar_crit"
+name = "MAR: экспансивные пули"
+text = "Шанс двойного урона"
+stat = "mar_crit"
+mode = "add"
+value = 0.05
+group = "weapon"
+weapon = "mar"
+
+# ---------- дробовик ----------
+
+[[upgrade]]
+id = "shotgun_damage"
+name = "Дробовик: крупная дробь"
+text = "Урон дробины"
+stat = "shotgun_damage"
+mode = "mult"
+group = "weapon"
+weapon = "shotgun"
+
+[[upgrade]]
+id = "shotgun_rate"
+name = "Дробовик: помповый механизм"
+text = "Скорострельность дробовика"
+stat = "shotgun_rate"
+mode = "mult"
+group = "weapon"
+weapon = "shotgun"
+
+[[upgrade]]
+id = "shotgun_pellets"
+name = "Дробовик: больше дроби"
+text = "Дробин в выстреле"
+stat = "shotgun_pellets"
+mode = "add"
+value = 1
+integer = true
+max_rank = 3
+group = "weapon"
+weapon = "shotgun"
+
+[[upgrade]]
+id = "shotgun_spread"
+name = "Дробовик: широкий чок"
+text = "Ширина веера дроби"
+stat = "shotgun_spread"
+mode = "mult"
+group = "weapon"
+weapon = "shotgun"
+
+# ---------- снайперская винтовка ----------
+
+[[upgrade]]
+id = "sniper_damage"
+name = "Снайперка: тяжёлая пуля"
+text = "Урон снайперской винтовки"
+stat = "sniper_damage"
+mode = "mult"
+group = "weapon"
+weapon = "sniper"
+
+[[upgrade]]
+id = "sniper_rate"
+name = "Снайперка: быстрый затвор"
+text = "Скорострельность снайперской винтовки"
+stat = "sniper_rate"
+mode = "mult"
+group = "weapon"
+weapon = "sniper"
+
+[[upgrade]]
+id = "sniper_pierce"
+name = "Снайперка: бронебойная пуля"
+text = "Пробивает ещё одного жука"
+stat = "sniper_pierce"
+mode = "add"
+value = 1
+integer = true
+max_rank = 3
+group = "weapon"
+weapon = "sniper"
+
+# ---------- огнемёт ----------
+
+[[upgrade]]
+id = "flame_damage"
+name = "Огнемёт: горячая смесь"
+text = "Урон огнемёта"
+stat = "flame_damage"
+mode = "mult"
+group = "weapon"
+weapon = "flame"
+
+[[upgrade]]
+id = "flame_range"
+name = "Огнемёт: длинное сопло"
+text = "Дальность огнемёта"
+stat = "flame_range"
+mode = "mult"
+group = "weapon"
+weapon = "flame"
+
+[[upgrade]]
+id = "flame_burn"
+name = "Огнемёт: липкое топливо"
+text = "Урон горения"
+stat = "flame_burn"
+mode = "mult"
+group = "weapon"
+weapon = "flame"
+
+# ---------- ракетница ----------
+
+[[upgrade]]
+id = "rocket_damage"
+name = "Ракетница: усиленная боевая часть"
+text = "Урон ракеты"
+stat = "rocket_damage"
+mode = "mult"
+group = "weapon"
+weapon = "rocket"
+
+[[upgrade]]
+id = "rocket_rate"
+name = "Ракетница: автозаряжание"
+text = "Скорострельность ракетницы"
+stat = "rocket_rate"
+mode = "mult"
+group = "weapon"
+weapon = "rocket"
+
+[[upgrade]]
+id = "rocket_radius"
+name = "Ракетница: фугас"
+text = "Радиус взрыва"
+stat = "rocket_radius"
+mode = "mult"
+group = "weapon"
+weapon = "rocket"
+
+# ---------- мини-турель ----------
+
+[[upgrade]]
+id = "turret_damage"
+name = "Турель: спаренный ствол"
+text = "Урон турели"
+stat = "turret_damage"
+mode = "mult"
+group = "weapon"
+weapon = "turret"
+
+[[upgrade]]
+id = "turret_rate"
+name = "Турель: быстрый привод"
+text = "Скорострельность турели"
+stat = "turret_rate"
+mode = "mult"
+group = "weapon"
+weapon = "turret"
+
+[[upgrade]]
+id = "turret_life"
+name = "Турель: ёмкая батарея"
+text = "Время работы турели"
+stat = "turret_life"
+mode = "mult"
+group = "weapon"
+weapon = "turret"
+
+# ---------- шокер ----------
+
+[[upgrade]]
+id = "shock_damage"
+name = "Шокер: высокое напряжение"
+text = "Урон молнии"
+stat = "shock_damage"
+mode = "mult"
+group = "weapon"
+weapon = "shock"
+
+[[upgrade]]
+id = "shock_rate"
+name = "Шокер: быстрый конденсатор"
+text = "Скорострельность шокера"
+stat = "shock_rate"
+mode = "mult"
+group = "weapon"
+weapon = "shock"
+
+[[upgrade]]
+id = "shock_chain"
+name = "Шокер: длинная цепь"
+text = "Целей в цепи молнии"
+stat = "shock_chain"
+mode = "add"
+value = 1
+integer = true
+max_rank = 3
+group = "weapon"
+weapon = "shock"

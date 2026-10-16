@@ -33,6 +33,17 @@ class Particles:
         self.size[free] = rng.uniform(*size, k)
         self.alive[free] = True
 
+    def emit(self, origin: np.ndarray, vel: np.ndarray, life: float, rng: np.random.Generator,
+             size: tuple[float, float] = (8, 16)) -> None:
+        """Частицы из одной точки с заданными скоростями (язык пламени)."""
+        free = np.flatnonzero(~self.alive)[: len(vel)]
+        k = len(free)
+        self.pos[free] = origin
+        self.vel[free] = vel[:k]
+        self.life[free] = self.max_life[free] = life * rng.uniform(0.6, 1.0, k)
+        self.size[free] = rng.uniform(*size, k)
+        self.alive[free] = True
+
     def step(self, dt: float, drag: float = 6.0) -> None:
         idx = np.flatnonzero(self.alive)
         self.pos[idx] += self.vel[idx] * dt

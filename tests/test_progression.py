@@ -19,7 +19,7 @@ def test_xp_curve_grows_and_gives_about_thirty_levels(balance: Balance) -> None:
 
 def test_progress_can_gain_several_levels_at_once(balance: Balance) -> None:
     p = Progress(balance.xp)
-    gained = p.add(5 + 10 + 2)  # хватает на 2 уровня, 2 опыта в остатке
+    gained = p.add(xp_to_next(1, balance.xp) + xp_to_next(2, balance.xp) + 2)  # 2 уровня и 2 опыта в остатке
     assert gained == 2
     assert (p.level, p.xp, p.pending) == (3, 2, 2)
 

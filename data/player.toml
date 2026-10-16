@@ -12,10 +12,32 @@ damage_mult = 1.0       # общий урон
 range_mult = 1.0        # общая дальность полёта снарядов
 reload_mult = 1.0       # скорость перезарядки (больше — быстрее)
 ammo_mult = 1.0         # боезапас магазина
+# Характеристики оружия: <оружие>_damage и <оружие>_rate есть у каждого ствола (множители),
+# остальные — особые. Растут только улучшениями своего оружия.
 mar_damage = 1.0
 mar_rate = 1.0
 mar_pierce = 0          # сколько жуков пуля пробивает насквозь
 mar_crit = 0.0          # шанс двойного урона
+shotgun_damage = 1.0
+shotgun_rate = 1.0
+shotgun_pellets = 0     # прибавка к числу дробин
+shotgun_spread = 1.0    # множитель ширины веера
+sniper_damage = 1.0
+sniper_rate = 1.0
+sniper_pierce = 0
+flame_damage = 1.0
+flame_rate = 1.0
+flame_range = 1.0
+flame_burn = 1.0        # урон горения
+rocket_damage = 1.0
+rocket_rate = 1.0
+rocket_radius = 1.0
+turret_damage = 1.0
+turret_rate = 1.0
+turret_life = 1.0
+shock_damage = 1.0
+shock_rate = 1.0
+shock_chain = 0
 orbital_rate = 1.0      # скорость перезарядки орбитального удара
 orbital_radius = 1.0
 

@@ -11,7 +11,9 @@ from starrun.balance import Balance, data_dir
 def test_data_loads_and_matches_design(balance: Balance) -> None:
     assert balance.enemies["worker"].hp == 10
     assert balance.enemies["warrior"].windup == pytest.approx(0.8)
-    assert balance.mar.fire_rate == 8
+    assert balance.weapons["mar"].fire_rate == 8
+    assert list(balance.weapons) == ["mar", "shotgun", "sniper", "flame", "rocket", "turret", "shock"]
+    assert balance.enemies["tanker"].armor == 3
     assert [r.bonus for r in balance.rarities[:3]] == [0.07, 0.10, 0.14]
     assert len(balance.rarities) == 6
 

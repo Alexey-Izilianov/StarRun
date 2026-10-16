@@ -48,6 +48,8 @@ class Game(arcade.Window):
         self._fit_cameras()
         self.held: set[int] = set()
         self.ability_pressed = False
+        self.slot_pressed: int | None = None
+        self.wheel = 0
         self.mouse_screen = (0.0, 0.0)
         self.shake = 0.0
         self.new_run()
@@ -84,7 +86,9 @@ class Game(arcade.Window):
             self.ability_pressed = False
             p = self.world_cam.unproject(self.mouse_screen)
             target = (p.x, p.y)
-        return Controls((dx, dy), sprint, target)
+        select, self.slot_pressed = self.slot_pressed, None
+        cycle, self.wheel = self.wheel, 0
+        return Controls((dx, dy), sprint, target, select, cycle)
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
         self.held.add(symbol)
@@ -103,6 +107,12 @@ class Game(arcade.Window):
             self.mode = Mode.PLAY if self.mode is Mode.STATS else Mode.STATS
         elif symbol == arcade.key.SPACE and self.mode is Mode.PLAY:
             self.ability_pressed = True
+        elif symbol in CHOICE_KEYS and self.mode is Mode.PLAY:
+            self.slot_pressed = CHOICE_KEYS[symbol]
+
+    def on_mouse_scroll(self, x: int, y: int, scroll_x: float, scroll_y: float) -> None:
+        if self.mode is Mode.PLAY and scroll_y:
+            self.wheel = -1 if scroll_y > 0 else 1  # колесо от себя — предыдущий слот
 
     def on_key_release(self, symbol: int, modifiers: int) -> None:
         self.held.discard(symbol)

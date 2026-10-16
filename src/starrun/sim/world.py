@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from starrun.balance import Balance, Stamina
-from starrun.sim.combat import Acid, Bullets, Gun, Mark, Orbital, fan
+from starrun.sim.combat import Acid, Bullets, Explosion, Impacts, Mark, Orbital, fan
 from starrun.sim.effects import Decals, Gems, Particles
 from starrun.sim.progression import Offer, Progress, Stats, Upgrades
 from starrun.sim.session import Phase, Session
 from starrun.sim.spawner import Spawner, edge_positions, front_side
 from starrun.sim.swarm import KINDS, QUEEN, SEMI_BOSS, WORKER, Swarm
+from starrun.sim.weapons import Fires, Turrets, Weapon, make_weapon
 
 VIEW_HALF = (960.0, 540.0)  # полэкрана 1080p — мир всегда видится в этом масштабе
 MAX_DT = 1 / 30             # при подвисании кадра симуляция не перескакивает сквозь стены жуков
@@ -21,6 +22,8 @@ EVAC_SPAWN_BOOST = 1.3      # пока ждём челнок, рой давит 
 QUEEN_SPAWN_SHARE = 0.6     # при королеве обычных жуков меньше: свиту она призывает сама
 TARGET_SWITCH = 0.6         # MAR бросает цель ради жука, который вдвое ближе (с запасом)
 BOSS_FOCUS = 220.0          # босс в приоритете, пока ближе этого никто не кусает
+KNOCK_STEP = 0.35           # отбрасывание за попадание — доля силы knockback, в пикселях
+SLOTS = 3                   # стволов одновременно
 
 
 @dataclass
@@ -28,6 +31,8 @@ class Controls:
     move: tuple[float, float] = (0.0, 0.0)
     sprint: bool = False
     ability_target: tuple[float, float] | None = None  # точка в мире, если в этом кадре нажат пробел
+    select: int | None = None                          # клавиша 1–3: слот оружия
+    cycle: int = 0                                     # колесо мыши: ±1 слот
 
 
 @dataclass
@@ -80,23 +85,45 @@ class World:
         self.swarm = Swarm(b.enemies, b.spawn.cap + 120, self.rng)
         self.bullets = Bullets()
         self.acid = Acid()
-        self.gun = Gun(b.mar)
+        self.weapons: list[Weapon] = [make_weapon("mar", b.weapons["mar"])]
+        self.active = 0
+        self.turrets = Turrets(b.weapons["turret"])
+        self.fires = Fires()
         self.orbital = Orbital(b.orbital)
         self.splashes = Particles()
+        self.flames = Particles(1500)
         self.decals = Decals()
         self.gems = Gems()
         self.progress = Progress(b.xp)
-        self.upgrades = Upgrades(b.upgrades, b.rarities)
+        self.upgrades = Upgrades(b.upgrades, b.rarities, b.weapons)
         self.session = Session(b.alert, b.evac, b.scaling, b.semi_boss_minutes)
-        self.spawner = Spawner(b.spawn, self.rng)
+        flocks = {k: (c.flock_min, c.flock_max) for k, c in b.enemies.items() if c.flock_max}
+        self.spawner = Spawner(b.spawn, b.mix, self.rng, flocks)
         self.kills: Counter[str] = Counter()
         self.damage_dealt = 0.0
         self.damage_taken = 0.0
+        self.damage_by: defaultdict[str, float] = defaultdict(float)  # полученный урон: вид жука или "acid"
         self.events: list[str] = []      # что случилось за последний шаг — для звука, баннеров, тряски
         self.blasts: list[Mark] = []     # взрывы орбитального удара за последний шаг
+        self.booms: list[Explosion] = [] # взрывы ракет и гранат за последний шаг
+        self.arcs: list[np.ndarray] = [] # молнии шокера за последний шаг: точки цепи
         self.evac_pos: np.ndarray | None = None
-        self.target: int | None = None   # номер жука, в которого целится MAR
+        self.target: int | None = None   # номер жука, в которого целится выбранный ствол
         self._offer: list[Offer] = []
+
+    # ---------- оружие ----------
+    @property
+    def weapon(self) -> Weapon:
+        return self.weapons[self.active]
+
+    def owned(self) -> dict[str, tuple[int, bool]]:
+        return {w.id: (w.level, w.mod) for w in self.weapons}
+
+    def select(self, slot: int) -> None:
+        if 0 <= slot < len(self.weapons) and slot != self.active:
+            self.active = slot
+            self.target = None
+            self.events.append("switch")
 
     # ---------- выбор улучшений ----------
     @property
@@ -105,11 +132,21 @@ class World:
 
     def offer(self) -> list[Offer]:
         if self.awaiting_choice and not self._offer:
-            self._offer = self.upgrades.offer(self.rng)
+            self._offer = self.upgrades.offer(self.rng, owned=self.owned(), free_slot=len(self.weapons) < SLOTS)
         return self._offer
 
     def choose(self, i: int) -> None:
         offer = self.offer()[i]
+        up = offer.upgrade
+        if offer.special == "weapon":
+            self.weapons.append(make_weapon(up.weapon, self.balance.weapons[up.weapon]))
+            self.active = len(self.weapons) - 1  # новый ствол сразу в руках
+        elif up.weapon:
+            w = next(w for w in self.weapons if w.id == up.weapon)
+            if offer.special == "mod":
+                w.mod = True
+            else:
+                w.level += 1
         old_max = self.stats["max_hp"]
         self.upgrades.apply(offer, self.stats)
         self.player.hp += max(0.0, self.stats["max_hp"] - old_max)  # новая броня приходит целой
@@ -120,12 +157,18 @@ class World:
     def step(self, dt: float, controls: Controls) -> None:
         self.events = []
         self.blasts = []
+        self.booms = []
+        self.arcs = []
         if self.session.over or self.awaiting_choice:
             return
         dt = min(dt, MAX_DT)
         b, s, p = self.balance, self.session, self.player
 
         p.move(dt, controls.move, controls.sprint, self.stats)
+        if controls.select is not None:
+            self.select(controls.select)
+        if controls.cycle:
+            self.select((self.active + controls.cycle) % len(self.weapons))
         if controls.ability_target is not None:
             target = np.array(controls.ability_target, np.float32)
             self.events.append("orbital" if self.orbital.trigger(target, p.pos, self.stats) else "orbital_not_ready")
@@ -137,7 +180,13 @@ class World:
 
         boost = {Phase.EVAC: EVAC_SPAWN_BOOST, Phase.QUEEN: QUEEN_SPAWN_SHARE}.get(s.phase, 1.0)
         for name, pos in self.spawner.update(dt, s.elapsed, self.swarm.count(), p.pos, VIEW_HALF, boost):
-            self.swarm.spawn(KINDS.index(name), pos, s.hp_mult, s.damage_mult)
+            kind = KINDS.index(name)
+            limit = b.enemies[name].max_alive
+            if limit:  # сверх лимита (мозговые) — рабочими
+                room = max(0, limit - self.swarm.count(kind))
+                self.swarm.spawn(WORKER, pos[room:], s.hp_mult, s.damage_mult)
+                pos = pos[:room]
+            self.swarm.spawn(kind, pos, s.hp_mult, s.damage_mult)
         far = self.swarm.far_from(p.pos, b.spawn.despawn_distance)
         if len(far):
             # Отставших — за край экрана по ходу движения: убежать от толпы насовсем нельзя
@@ -145,10 +194,12 @@ class World:
             self.swarm.pos[far] = edge_positions(self.rng, len(far), p.pos, VIEW_HALF, b.spawn.margin, side)
 
         step = self.swarm.step(dt, p.pos, self.stats["radius"])
-        hits = step.hits + self.acid.step(dt, p.pos, self.stats["radius"])
-        for amount in hits:
+        acid = self.acid.step(dt, p.pos, self.stats["radius"])
+        sources = [KINDS[k] for k in step.hit_kinds] + ["acid"] * len(acid)
+        for amount, source in zip(step.hits + acid, sources, strict=True):
             if p.take_hit(amount, self.rng, self.stats["dodge"]):
                 self.damage_taken += amount
+                self.damage_by[source] += amount
                 self.events.append("player_hit")
             else:
                 self.events.append("dodge")
@@ -163,15 +214,23 @@ class World:
             self.acid.fire(where, fan(aim, queen.volley_count, queen.volley_spread_deg),
                            queen.acid_speed, queen.acid_damage * s.damage_mult)
             self.events.append("volley")
+        spitter = b.enemies["spitter"]
+        for where, direction, damage in step.spits:
+            self.acid.fire(where, direction[None], spitter.projectile_speed, damage)
+            self.events.append("spit")
         if step.swings:
             self.events.append("swing")
 
-        self._shoot(dt)
-        bug, damage = self.bullets.step(dt, self.swarm)
-        self._damage(bug, damage)
+        for w in self.weapons:
+            w.tick(dt, self)
+        self.weapon.update(dt, self)
+        self.turrets.step(dt, self)
+        self.fires.step(dt, self)
+        self.damage_dealt += self.swarm.burn_tick(dt)
+        self.resolve(self.bullets.step(dt, self.swarm))
         for mark in self.orbital.update(dt):
             caught = self.swarm.in_radius(mark.pos, mark.radius)
-            self._damage(caught, np.full(len(caught), mark.damage, np.float32))
+            self.deal(caught, np.full(len(caught), mark.damage, np.float32))
             self.splashes.burst(self.rng, mark.pos[None], 60, (100, 700), 0.8, (5, 12))
             self.blasts.append(mark)
             self.events.append("blast")
@@ -181,6 +240,7 @@ class World:
         if gained:
             self.events.append("level_up")
         self.splashes.step(dt)
+        self.flames.step(dt, drag=2.5)
         self.decals.step(dt)
 
         if self.evac_pos is not None:
@@ -191,26 +251,13 @@ class World:
             s.player_died()
             self.events.append("defeat")
 
-    def _shoot(self, dt: float) -> None:
-        mar, stats, p = self.balance.mar, self.stats, self.player
-        reach = mar.range * stats["range_mult"]
-        self.target = self.pick_target(reach)
-        shots = self.gun.update(dt, stats, self.target is not None)
-        if not shots or self.target is None:
-            return
-        aim = self.swarm.pos[self.target] - p.pos
-        base = np.arctan2(aim[1], aim[0])
-        angles = base + np.radians(self.rng.normal(0, mar.spread_deg / 2, shots))
-        dirs = np.stack([np.cos(angles), np.sin(angles)], 1).astype(np.float32)
-        damage = np.full(shots, mar.damage * stats["mar_damage"] * stats["damage_mult"], np.float32)
-        damage[self.rng.random(shots) < stats["mar_crit"]] *= 2
-        muzzle = p.pos + dirs[0] * (stats["radius"] + 6)
-        self.bullets.fire(muzzle, dirs, mar.bullet_speed, damage, int(stats["mar_pierce"]), reach / mar.bullet_speed)
-        p.facing = dirs[0]
-        self.events.append("shot")
-
     def pick_target(self, reach: float) -> int | None:
-        """Ближайший жук, но с «залипанием»: пока цель жива и в радиусе, MAR добивает её, а не размазывает
+        """Цель выбранного ствола; запоминается в self.target."""
+        self.target = self._choose_target(reach)
+        return self.target
+
+    def _choose_target(self, reach: float) -> int | None:
+        """Ближайший жук, но с «залипанием»: пока цель жива и в радиусе, ствол добивает её, а не размазывает
         урон по всей подходящей толпе. Переключение — только на жука заметно ближе (вцепившегося в десантника)."""
         sw, pos = self.swarm, self.player.pos
         nearest = sw.nearest(pos, reach)
@@ -237,10 +284,39 @@ class World:
         i = int(np.argmin(d))
         return int(idx[i]) if d[i] <= reach else None
 
-    def _damage(self, idx: np.ndarray, amounts: np.ndarray) -> None:
+    def deal(self, idx: np.ndarray, amounts: np.ndarray, armor: bool = True) -> None:
+        """Урон по жукам с учётом брони; в статистику идёт фактически нанесённый."""
         if len(idx):
-            self.swarm.hit(idx, amounts)
-            self.damage_dealt += float(np.sum(amounts))
+            self.damage_dealt += self.swarm.hit(idx, amounts, armor)
+
+    def resolve(self, imp: Impacts) -> None:
+        """Последствия полёта пуль: урон, отбрасывание, поджог, взрывы."""
+        self.deal(imp.bug, imp.damage)
+        pushed = np.flatnonzero(np.abs(imp.knock).sum(1) > 0)
+        self.swarm.knock(imp.bug[pushed], imp.knock[pushed] * KNOCK_STEP)
+        burning = np.flatnonzero(imp.burn_time > 0)
+        if len(burning):
+            self.swarm.ignite(imp.bug[burning], float(imp.burn_time[burning].max()), float(imp.burn_dps[burning].max()))
+        for e in imp.explosions:
+            self._explode(e)
+
+    def _explode(self, e: Explosion, secondary: bool = False) -> None:
+        sw = self.swarm
+        caught = sw.in_radius(e.pos, e.radius)
+        self.deal(caught, np.full(len(caught), e.damage, np.float32))
+        if e.knock and len(caught):
+            away = sw.pos[caught] - e.pos
+            away /= np.linalg.norm(away, axis=1, keepdims=True) + 1e-6
+            sw.knock(caught, away * e.knock * KNOCK_STEP)
+        self.splashes.burst(self.rng, e.pos[None], 14, (80, 360), 0.4, (4, 9))
+        self.booms.append(e)
+        self.events.append("explosion")
+        if e.cluster and not secondary:  # кассета: малые заряды кольцом вокруг
+            angles = self.rng.uniform(0, 2 * np.pi, e.cluster)
+            dist = self.rng.uniform(0.6, 1.1, e.cluster) * e.radius
+            for a, r in zip(angles, dist, strict=True):
+                pos = e.pos + np.array([np.cos(a), np.sin(a)], np.float32) * r
+                self._explode(Explosion(pos, e.cluster_radius, e.cluster_damage), secondary=True)
 
     def _collect_dead(self) -> None:
         sw = self.swarm

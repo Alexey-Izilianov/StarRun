@@ -1,6 +1,6 @@
 [project]
 name = "starrun"
-version = "0.0.2"
+version = "0.0.3"
 description = "Top-down выживалка: десантник против жуков"
 requires-python = ">=3.13"
 dependencies = [

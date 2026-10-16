@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from starrun.balance import Balance
-from starrun.sim.combat import Bullets, Gun, Orbital, fan
+from starrun.sim.combat import Bullets, Orbital, fan
 from starrun.sim.effects import Gems
 from starrun.sim.progression import Stats
 from starrun.sim.swarm import QUEEN, SEMI_BOSS, WARRIOR, WORKER, Swarm
@@ -62,26 +62,15 @@ def test_bullets_kill_and_pierce(swarm: Swarm) -> None:
     a = swarm.spawn(WORKER, at(100, 0))[0]
     b = swarm.spawn(WORKER, at(160, 0))[0]
     bullets = Bullets()
-    bullets.fire(ORIGIN, at(1, 0), 1100, np.array([10], np.float32), pierce=1, life=1)
+    bullets.fire(ORIGIN, at(1, 0), 1100, np.array([10], np.float32), 1, pierce=1)
     hit = []
     for _ in range(20):
-        idx, dmg = bullets.step(1 / 120, swarm)
-        swarm.hit(idx, dmg)
-        hit += idx.tolist()
+        imp = bullets.step(1 / 120, swarm)
+        swarm.hit(imp.bug, imp.damage)
+        hit += imp.bug.tolist()
     assert hit == [a, b]
     assert set(swarm.collect_dead().tolist()) == {a, b}
     assert not bullets.alive.any()
-
-
-def test_gun_magazine_and_reload(balance: Balance, stats: Stats) -> None:
-    gun = Gun(balance.mar)
-    shots = sum(gun.update(1 / 60, stats, True) for _ in range(600))  # 10 с огня
-    mag, rate, reload = balance.mar.magazine, balance.mar.fire_rate, balance.mar.reload
-    cycle = mag / rate + reload
-    expected = mag * int(10 // cycle) + min(mag, int((10 % cycle) * rate) + 1)
-    assert abs(shots - expected) <= 2
-    gun2 = Gun(balance.mar)
-    assert sum(gun2.update(1 / 60, stats, False) for _ in range(60)) == 0  # без цели не стреляет
 
 
 def test_orbital_strike_waits_then_hits_area(balance: Balance, stats: Stats, swarm: Swarm) -> None:

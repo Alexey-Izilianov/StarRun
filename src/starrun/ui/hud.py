@@ -13,6 +13,7 @@ import pyglet
 from starrun.sim.progression import Offer
 from starrun.sim.session import Phase
 from starrun.sim.swarm import KINDS, QUEEN, SEMI_BOSS
+from starrun.sim.weapons import Weapon
 from starrun.sim.world import World
 from starrun.ui.render import Shapes
 
@@ -32,15 +33,17 @@ EDGE = (255, 255, 255, 70)
 
 STAT_NAMES = {
     "max_hp": "Здоровье", "speed": "Скорость", "sprint_mult": "Бег", "regen": "Регенерация",
-    "dodge": "Уклонение", "pickup_radius": "Радиус подбора", "damage_mult": "Общий урон",
+    "dodge": "Уклонение", "pickup_radius": "Радиус подбора", "damage_mult": "Урон оружия",
     "range_mult": "Дальность", "reload_mult": "Перезарядка", "ammo_mult": "Боезапас",
-    "mar_damage": "MAR: урон", "mar_rate": "MAR: скорострельность", "mar_pierce": "MAR: пробитие",
-    "mar_crit": "MAR: двойной урон", "orbital_rate": "Орбита: перезарядка", "orbital_radius": "Орбита: радиус",
+    "orbital_rate": "Орбита: перезарядка", "orbital_radius": "Орбита: радиус",
 }
 FRACTION = {"dodge", "mar_crit"}           # доли — показываются в процентах
-MULTIPLIER = {"damage_mult", "range_mult", "reload_mult", "ammo_mult", "mar_damage", "mar_rate",
-              "orbital_rate", "orbital_radius", "sprint_mult"}
-KIND_NAMES = {"worker": "Рабочие", "warrior": "Воины", "semi_boss": "Полубоссы", "queen": "Королева"}
+MULTIPLIER = {"damage_mult", "range_mult", "reload_mult", "ammo_mult", "orbital_rate", "orbital_radius",
+              "sprint_mult"}
+KIND_NAMES = {"worker": "Рабочие", "warrior": "Воины", "spitter": "Стрелки", "flyer": "Летающие",
+              "tanker": "Танкеры", "brain": "Мозговые", "semi_boss": "Полубоссы", "queen": "Королева"}
+SHORT = {"rocket": "Ракетница", "sniper": "Снайперка", "turret": "Турель"}  # в слот длинное имя не влезает
+MOD_COLOR = (240, 200, 60, 255)
 
 
 def clock(seconds: float) -> str:
@@ -59,6 +62,10 @@ def stat_text(name: str, value: float, base: float) -> str:
 
 
 def effect_text(offer: Offer, common_bonus: float) -> str:
+    if offer.special == "weapon":
+        return "Новое оружие"
+    if offer.special == "mod":
+        return "Модификация"
     amount = offer.amount(common_bonus)
     stat = offer.upgrade.stat
     if offer.upgrade.mode == "mult" or stat in FRACTION:
@@ -185,22 +192,28 @@ class Hud:
         t.flush()
 
     def _slots(self, world: World, vw: float) -> None:
-        t, gun, orb = self.t, world.gun, world.orbital
-        sw, sh, gap = 170, 84, 12
+        t, orb = self.t, world.orbital
+        sw, sh, gap = 190, 84, 12
         x = vw / 2 - (3 * sw + 2 * gap + 24 + 220) / 2
         y = 24
-        names = [world.balance.mar.name, "—", "—"]
-        for i, name in enumerate(names):
+        for i in range(3):
+            w = world.weapons[i] if i < len(world.weapons) else None
+            on = w is not None and i == world.active
             self.s.rect(x, y, x + sw, y + sh, PANEL)
-            self.s.outline(x, y, x + sw, y + sh, INK if i == 0 else EDGE, 2 if i == 0 else 1)
+            self.s.outline(x, y, x + sw, y + sh, INK if on else EDGE, 2 if on else 1)
             t.draw(f"slot{i}k", str(i + 1), x + 12, y + sh - 24, 13, QUIET)
-            t.draw(f"slot{i}n", name, x + sw / 2, y + 40, 18, INK if i == 0 else QUIET, anchor_x="center", bold=i == 0)
-            if i == 0:
-                mag = gun.magazine(world.stats)
-                if gun.reloading:
-                    t.draw("ammo", "перезарядка", x + sw / 2, y + 14, 12, ALERT, anchor_x="center")
-                else:
-                    t.draw("ammo", f"{gun.ammo} / {mag}", x + sw / 2, y + 14, 12, QUIET, anchor_x="center")
+            if w is None:
+                t.draw(f"slot{i}n", "—", x + sw / 2, y + 40, 18, QUIET, anchor_x="center")
+                t.draw(f"slot{i}a", "", x + sw / 2, y + 14, 12, QUIET, anchor_x="center")
+            else:
+                name = SHORT.get(w.id, w.cfg.name)
+                t.draw(f"slot{i}n", name, x + sw / 2, y + 40, 17, INK if on else QUIET, anchor_x="center", bold=on)
+                for k in range(5):  # уровень ствола; золотые — есть модификация
+                    color = (MOD_COLOR if w.mod else INK) if k < w.level else TRACK
+                    px = x + sw - 14 - (4 - k) * 11
+                    self.s.rect(px - 7, y + sh - 16, px, y + sh - 10, color)
+                t.draw(f"slot{i}a", self._ammo(world, w), x + sw / 2, y + 14, 12,
+                       ALERT if w.reloading else QUIET, anchor_x="center")
             x += sw + gap
         x += 24 - gap
         self.s.rect(x, y, x + 220, y + sh, PANEL)
@@ -209,6 +222,15 @@ class Hud:
         t.draw("ab_n", world.balance.orbital.name, x + 110, y + 34, 17, anchor_x="center")
         total = orb.cooldown_total(world.stats)
         self.bar(x + 14, y + 12, 192, 5, 1 - orb.cooldown_left / total if total else 1, XP)
+
+    @staticmethod
+    def _ammo(world: World, w: Weapon) -> str:
+        if w.reloading:
+            return "перезарядка"
+        if w.id == "turret":
+            return f"турелей {int(world.turrets.alive.sum())}"
+        mag = w.magazine(world)
+        return f"{w.ammo} / {mag}" if mag else ""
 
     def _pointers(self, world: World, vw: float, world_to_ui: Callable[[np.ndarray], tuple[float, float]]) -> None:
         """Стрелки у края экрана: где полубосс, королева и зона эвакуации, если их не видно."""
@@ -264,15 +286,17 @@ class Hud:
             x, y = x0 + i * (cw + gap), 400
             card = Button(f"card{i}", "", (x, y, x + cw, y + ch), lambda i=i: choose(i))
             hover = card.contains(*self.mouse)
-            color = (*offer.rarity.color, 255)
+            color = MOD_COLOR if offer.special else (*offer.rarity.color, 255)
             self.s.rect(x, y, x + cw, y + ch, (26, 26, 30, 240) if hover else (18, 18, 22, 235))
             self.s.outline(x, y, x + cw, y + ch, color if hover else EDGE, 2 if hover else 1)
             self.s.rect(x, y + ch - 6, x + cw, y + ch, color)
             self.o.draw(f"c{i}k", str(i + 1), x + 20, y + ch - 44, 14, QUIET)
-            self.o.draw(f"c{i}r", offer.rarity.name, x + cw - 20, y + ch - 44, 14, color, anchor_x="right")
+            label = "" if offer.special else offer.rarity.name
+            self.o.draw(f"c{i}r", label, x + cw - 20, y + ch - 44, 14, color, anchor_x="right")
             self.o.draw(f"c{i}n", offer.upgrade.name, x + 20, y + ch - 96, 21, bold=True, width=cw - 40)
             self.o.draw(f"c{i}t", offer.upgrade.text, x + 20, y + ch - 170, 16, QUIET, width=cw - 40)
-            self.o.draw(f"c{i}e", effect_text(offer, common), x + 20, y + 30, 30, color, bold=True)
+            size = 24 if offer.special else 30
+            self.o.draw(f"c{i}e", effect_text(offer, common), x + 20, y + 30, size, color, bold=True)
             self.buttons.append(card)
         self.o.draw("lu_hint", "Клавиши 1–3 или мышь", vw / 2, 350, 14, QUIET, anchor_x="center")
         self._flush_overlay()
@@ -290,7 +314,7 @@ class Hud:
     def stats(self, world: World, vw: float) -> None:
         self.buttons = []
         self._dim(vw)
-        l, r, b, top = vw / 2 - 560, vw / 2 + 560, 200, 900  # noqa: E741
+        l, r, b, top = vw / 2 - 700, vw / 2 + 700, 200, 900  # noqa: E741
         self.s.rect(l, b, r, top, (18, 18, 22, 240))
         t = self.o
         t.draw("s_title", "Статистика десантника", l + 32, top - 56, 26, bold=True)
@@ -303,24 +327,36 @@ class Hud:
             t.draw(f"sn_{name}", STAT_NAMES[name], l + 32, y, 16, QUIET)
             t.draw(f"sv_{name}", stat_text(name, world.stats[name], base[name]), l + 420, y, 16, anchor_x="right")
             y -= 34
-        x = l + 520
+        x, x_end = l + 480, l + 880
         y = top - 110
         s = world.session
         rows = [("Время", clock(s.elapsed)), ("Уровень", str(world.progress.level)),
                 ("Нанесено урона", f"{world.damage_dealt:,.0f}".replace(",", " ")),
                 ("Получено урона", f"{world.damage_taken:,.0f}".replace(",", " "))]
         rows += [(KIND_NAMES[k], str(world.kills[k])) for k in KINDS if world.kills[k]]
+        if world.damage_taken:
+            worst, amount = max(world.damage_by.items(), key=lambda kv: kv[1])
+            who = "кислота" if worst == "acid" else KIND_NAMES[worst].lower()
+            rows.append(("Больше всего ранили", f"{who}, {amount / world.damage_taken:.0%}".replace("%", " %")))
         for i, (label, value) in enumerate(rows):
             t.draw(f"sr{i}l", label, x, y, 16, QUIET)
-            t.draw(f"sr{i}v", value, r - 32, y, 16, anchor_x="right")
+            t.draw(f"sr{i}v", value, x_end, y, 16, anchor_x="right")
             y -= 34
-        y -= 20
+        x, y = l + 940, top - 110
+        t.draw("s_w", "Оружие", x, y, 18, bold=True)
+        y -= 34
+        for i, w in enumerate(world.weapons):
+            mod = f" · {w.cfg.mod_name.lower()}" if w.mod else ""
+            t.draw(f"sw{i}", f"{w.cfg.name} — ур. {w.level}{mod}", x, y, 15, MOD_COLOR if w.mod else INK)
+            y -= 28
+        y -= 14
         t.draw("s_up", "Взятые улучшения", x, y, 18, bold=True)
         y -= 36
-        recent = world.upgrades.taken[-8:]
+        recent = world.upgrades.taken[-9:]
         for i, offer in enumerate(reversed(recent)):
-            t.draw(f"su{i}", f"{offer.upgrade.name} — {offer.rarity.name.lower()}", x, y, 15,
-                   (*offer.rarity.color, 255))
+            label = {"weapon": "новое оружие", "mod": "модификация"}.get(offer.special, offer.rarity.name.lower())
+            color = MOD_COLOR if offer.special else (*offer.rarity.color, 255)
+            t.draw(f"su{i}", f"{offer.upgrade.name} — {label}", x, y, 14, color, width=400)
             y -= 30
         self._flush_overlay()
 

@@ -1,14 +1,113 @@
-# Оружие и активная способность. Этап 1 — только MAR и орбитальный удар.
+# Оружие и удар с орбиты. Урон — за попадание (у огнемёта — за тик), темп — выстрелов в секунду,
+# расстояния — пиксели 1080p. magazine = 0 — без магазина. mod_* — модификация на 5-м уровне ствола.
+# Порядок разделов — порядок в карточках «Новое оружие».
 
 [mar]
 name = "MAR"
+text = "Автоматическая винтовка: ровный урон по прямой"
 damage = 10
-fire_rate = 8               # выстрелов в секунду
+fire_rate = 8
 range = 600
 bullet_speed = 1100
 spread_deg = 3
 magazine = 40
 reload = 1.8
+mod_name = "Подствольный гранатомёт"
+mod_text = "Раз в 3 с — граната в цель: взрыв по площади"
+mod_every = 3.0
+mod_damage = 30
+mod_radius = 90
+
+[shotgun]
+name = "Дробовик"
+text = "Веер дроби вблизи, отбрасывает жуков"
+damage = 8                   # за дробину
+fire_rate = 1.4
+range = 300
+bullet_speed = 1000
+pellets = 8
+cone_deg = 35
+magazine = 6
+reload = 2.2
+knockback = 120
+mod_name = "Зажигательная дробь"
+mod_text = "Дробь поджигает жуков на 2 с"
+mod_time = 2.0
+mod_damage = 6              # урон горения в секунду
+
+[sniper]
+name = "Снайперская винтовка"
+text = "Мощный выстрел в самого живучего, пробивает насквозь"
+damage = 60
+fire_rate = 0.8
+range = 1100
+bullet_speed = 2600
+pierce = 3
+magazine = 5
+reload = 2.5
+mod_name = "Рельса"
+mod_text = "Пробивает всех жуков на линии"
+
+[flame]
+name = "Огнемёт"
+text = "Конус огня: поджигает всех в нём"
+damage = 2                   # за тик
+fire_rate = 12              # тиков в секунду
+range = 200
+cone_deg = 30
+magazine = 60               # топливо — тиков на бак
+reload = 2.0
+burn_time = 2.0
+burn_dps = 3
+mod_name = "Напалм"
+mod_text = "Огонь оставляет горящие лужи на 4 с"
+mod_time = 4.0
+mod_damage = 8              # урон лужи в секунду
+mod_radius = 60
+
+[rocket]
+name = "Тактическая ракетница"
+text = "Ракета взрывается в гуще толпы"
+damage = 45
+fire_rate = 0.5
+range = 800
+bullet_speed = 650
+radius = 100                # радиус взрыва
+knockback = 160
+magazine = 4
+reload = 2.5
+mod_name = "Кассета"
+mod_text = "Ракета рассыпается на 4 малых заряда"
+mod_count = 4
+mod_damage = 20
+mod_radius = 60
+
+[turret]
+name = "Мини-турель"
+text = "Ставится на месте и стреляет сама 20 с"
+damage = 7
+fire_rate = 5               # выстрелов турели в секунду
+range = 450
+bullet_speed = 1100
+life = 20
+deploy_every = 7            # пока выбрана — новая турель раз в 7 с
+max_active = 3
+mod_name = "Пара турелей"
+mod_text = "Ставятся по две"
+mod_count = 2
+
+[shock]
+name = "Шокер"
+text = "Молния бьёт цель и перескакивает на соседних"
+damage = 18
+fire_rate = 1.6
+range = 350
+chain = 4                   # целей в цепи
+jump = 170                  # дальность перескока
+mod_name = "Шторм"
+mod_text = "Цепь на 8 целей, оглушение на 0,5 с"
+mod_count = 8
+mod_time = 0.5
 
 [orbital]
 name = "Удар с орбиты"
