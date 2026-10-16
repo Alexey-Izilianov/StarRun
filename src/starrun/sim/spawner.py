@@ -25,6 +25,15 @@ def edge_positions(rng: np.random.Generator, count: int, center: np.ndarray, hal
     return (np.stack([x, y], 1) + center).astype(np.float32)
 
 
+def front_side(rng: np.random.Generator, facing: np.ndarray) -> str:
+    """Сторона экрана по ходу движения; при диагонали — случайно, с весом по составляющей."""
+    fx, fy = abs(float(facing[0])), abs(float(facing[1]))
+    horizontal = rng.random() * (fx + fy + 1e-9) < fx
+    if horizontal:
+        return "right" if facing[0] > 0 else "left"
+    return "top" if facing[1] > 0 else "bottom"
+
+
 class Spawner:
     def __init__(self, cfg: SpawnCfg, rng: np.random.Generator) -> None:
         self.cfg = cfg

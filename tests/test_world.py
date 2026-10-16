@@ -4,7 +4,7 @@ import numpy as np
 
 from starrun.balance import Balance
 from starrun.sim.session import Phase
-from starrun.sim.swarm import QUEEN, WORKER
+from starrun.sim.swarm import QUEEN, SEMI_BOSS, WORKER
 from starrun.sim.world import Controls, World
 
 DT = 1 / 30
@@ -111,3 +111,30 @@ def test_max_hp_upgrade_heals_the_difference(balance: Balance) -> None:
             return
     w.choose(0)  # в этот раз броню не предложили — проверяем, что выбор вообще сработал
     assert w.progress.pending == 0
+
+
+def test_kiting_does_not_leave_the_swarm_behind(balance: Balance) -> None:
+    w = World(balance, seed=21)
+    w.session.elapsed = 6.5 * 60
+    play_kite(w, 25)
+    dist = np.linalg.norm(w.swarm.pos[w.swarm.alive_idx] - w.player.pos, axis=1)
+    assert (dist < 1100).mean() > 0.5  # больше половины толпы — на экране или у его края
+
+
+def play_kite(world: World, seconds: float) -> None:
+    for _ in range(int(seconds / DT)):
+        if world.awaiting_choice:
+            world.offer()
+            world.choose(0)
+        world.step(DT, Controls(move=kite(world)))
+
+
+def test_mar_focuses_boss_unless_something_bites(balance: Balance) -> None:
+    w = World(balance, seed=8)
+    worker = w.swarm.spawn(WORKER, np.array([[300, 0]], np.float32))[0]
+    boss = w.swarm.spawn(SEMI_BOSS, np.array([[0, 450]], np.float32))[0]
+    reach = balance.mar.range
+    assert w.pick_target(reach) == boss
+    w.swarm.pos[worker] = (120, 0)  # рабочий вцепился — сначала он
+    w.target = None
+    assert w.pick_target(reach) == worker

@@ -58,7 +58,7 @@ def test_apply_mult_and_add_upgrades(balance: Balance) -> None:
     blue, purple = balance.rarities[2], balance.rarities[3]
 
     ups.apply(Offer(by_id["speed"], blue, 2), stats)
-    assert stats["speed"] == pytest.approx(250 * 1.14)
+    assert stats["speed"] == pytest.approx(balance.player.stats["speed"] * 1.14)
 
     ups.apply(Offer(by_id["regen"], blue, 2), stats)  # add: 0.6 × (0.14 / 0.07)
     assert stats["regen"] == pytest.approx(1.2)

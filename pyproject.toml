@@ -1,6 +1,6 @@
 [project]
 name = "starrun"
-version = "0.1.0"
+version = "0.0.2"
 description = "Top-down выживалка: десантник против жуков"
 requires-python = ">=3.13"
 dependencies = [
@@ -28,6 +28,7 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+extend-exclude = ["tools/refscene"]  # одноразовые скрипты Blender (bpy), не код игры
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "PERF"]

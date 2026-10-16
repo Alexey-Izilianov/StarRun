@@ -106,9 +106,9 @@ class Swarm:
         return idx[d2 <= (radius + self.radius[idx]) ** 2]
 
     def far_from(self, point: np.ndarray, distance: float) -> np.ndarray:
-        """Рядовые жуки, отставшие дальше distance, — их переносят вперёд, чтобы давление не пропадало."""
+        """Жуки, отставшие дальше distance, — их переносят вперёд, чтобы давление не пропадало.
+        Боссы тоже: медленную королеву иначе можно просто оставить позади на весь финал."""
         idx = self.alive_idx
-        idx = idx[self.kind[idx] <= WARRIOR]
         d2 = ((self.pos[idx] - point) ** 2).sum(1)
         return idx[d2 > distance**2]
 

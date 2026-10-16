@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  check:
+    name: Lint, types, tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Dependencies
+        run: uv sync --locked
+
+      - name: Ruff
+        run: uv run ruff check src tests tools
+
+      - name: Mypy
+        run: uv run mypy src/starrun/sim src/starrun/balance.py
+
+      - name: Tests
+        # симуляция не открывает окон и не трогает OpenGL — тесты идут на обычном раннере
+        run: uv run pytest -q
+
+      - name: Balance smoke
+        # два коротких забега ботом: баланс грузится и забег проходит без исключений
+        run: uv run python tools/balance_bot.py --runs 2 --minutes 4

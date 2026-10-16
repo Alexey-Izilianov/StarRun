@@ -2,7 +2,7 @@
 
 [mar]
 name = "MAR"
-damage = 8
+damage = 10
 fire_rate = 8               # выстрелов в секунду
 range = 600
 bullet_speed = 1100

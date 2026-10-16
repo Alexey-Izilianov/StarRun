@@ -12,13 +12,15 @@ from starrun.sim.combat import Acid, Bullets, Gun, Mark, Orbital, fan
 from starrun.sim.effects import Decals, Gems, Particles
 from starrun.sim.progression import Offer, Progress, Stats, Upgrades
 from starrun.sim.session import Phase, Session
-from starrun.sim.spawner import Spawner, edge_positions
+from starrun.sim.spawner import Spawner, edge_positions, front_side
 from starrun.sim.swarm import KINDS, QUEEN, SEMI_BOSS, WORKER, Swarm
 
 VIEW_HALF = (960.0, 540.0)  # полэкрана 1080p — мир всегда видится в этом масштабе
 MAX_DT = 1 / 30             # при подвисании кадра симуляция не перескакивает сквозь стены жуков
-EVAC_SPAWN_BOOST = 1.6      # пока ждём челнок, рой давит сильнее
+EVAC_SPAWN_BOOST = 1.3      # пока ждём челнок, рой давит сильнее
+QUEEN_SPAWN_SHARE = 0.6     # при королеве обычных жуков меньше: свиту она призывает сама
 TARGET_SWITCH = 0.6         # MAR бросает цель ради жука, который вдвое ближе (с запасом)
+BOSS_FOCUS = 220.0          # босс в приоритете, пока ближе этого никто не кусает
 
 
 @dataclass
@@ -133,12 +135,14 @@ class World:
             self.swarm.spawn(kind, edge_positions(self.rng, 1, p.pos, VIEW_HALF, 120), s.boss_hp_mult, s.damage_mult)
             self.events.append(event)
 
-        boost = EVAC_SPAWN_BOOST if s.phase is Phase.EVAC else 1.0
+        boost = {Phase.EVAC: EVAC_SPAWN_BOOST, Phase.QUEEN: QUEEN_SPAWN_SHARE}.get(s.phase, 1.0)
         for name, pos in self.spawner.update(dt, s.elapsed, self.swarm.count(), p.pos, VIEW_HALF, boost):
             self.swarm.spawn(KINDS.index(name), pos, s.hp_mult, s.damage_mult)
         far = self.swarm.far_from(p.pos, b.spawn.despawn_distance)
         if len(far):
-            self.swarm.pos[far] = edge_positions(self.rng, len(far), p.pos, VIEW_HALF, b.spawn.margin)
+            # Отставших — за край экрана по ходу движения: убежать от толпы насовсем нельзя
+            side = front_side(self.rng, p.facing)
+            self.swarm.pos[far] = edge_positions(self.rng, len(far), p.pos, VIEW_HALF, b.spawn.margin, side)
 
         step = self.swarm.step(dt, p.pos, self.stats["radius"])
         hits = step.hits + self.acid.step(dt, p.pos, self.stats["radius"])
@@ -190,7 +194,7 @@ class World:
     def _shoot(self, dt: float) -> None:
         mar, stats, p = self.balance.mar, self.stats, self.player
         reach = mar.range * stats["range_mult"]
-        self.target = self._pick_target(reach)
+        self.target = self.pick_target(reach)
         shots = self.gun.update(dt, stats, self.target is not None)
         if not shots or self.target is None:
             return
@@ -205,11 +209,15 @@ class World:
         p.facing = dirs[0]
         self.events.append("shot")
 
-    def _pick_target(self, reach: float) -> int | None:
+    def pick_target(self, reach: float) -> int | None:
         """Ближайший жук, но с «залипанием»: пока цель жива и в радиусе, MAR добивает её, а не размазывает
         урон по всей подходящей толпе. Переключение — только на жука заметно ближе (вцепившегося в десантника)."""
         sw, pos = self.swarm, self.player.pos
         nearest = sw.nearest(pos, reach)
+        if nearest is not None and float(np.linalg.norm(sw.pos[nearest] - pos)) > BOSS_FOCUS:
+            boss = self.nearest_boss(reach)
+            if boss is not None:
+                return boss
         current = self.target
         if current is None or nearest is None or not sw.alive[current]:
             return nearest
@@ -218,6 +226,16 @@ class World:
             return nearest
         d_nearest = float(np.linalg.norm(sw.pos[nearest] - pos))
         return nearest if d_nearest < d_current * TARGET_SWITCH else current
+
+    def nearest_boss(self, reach: float) -> int | None:
+        sw, pos = self.swarm, self.player.pos
+        idx = sw.alive_idx
+        idx = idx[sw.kind[idx] >= SEMI_BOSS]
+        if not len(idx):
+            return None
+        d = np.linalg.norm(sw.pos[idx] - pos, axis=1) - sw.radius[idx]
+        i = int(np.argmin(d))
+        return int(idx[i]) if d[i] <= reach else None
 
     def _damage(self, idx: np.ndarray, amounts: np.ndarray) -> None:
         if len(idx):

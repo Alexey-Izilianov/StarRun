@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from starrun.balance import Balance
-from starrun.sim.spawner import Spawner, edge_positions
+from starrun.sim.spawner import Spawner, edge_positions, front_side
 
 HALF = (960.0, 540.0)
 CENTER = np.array([500.0, -300.0], np.float32)
@@ -53,3 +53,10 @@ def test_rush_happens_once_per_minute(balance: Balance, rng: np.random.Generator
     sizes = [sum(len(p) for _, p in sp.update(0.1, step / 10, crowd, CENTER, HALF)) for step in range(120 * 10)]
     rushes = [s for s in sizes if s >= balance.spawn.rush_base]
     assert len(rushes) == 2
+
+
+def test_front_side_follows_movement(rng: np.random.Generator) -> None:
+    assert front_side(rng, np.array([1.0, 0.0])) == "right"
+    assert front_side(rng, np.array([0.0, -1.0])) == "bottom"
+    sides = {front_side(rng, np.array([0.7, 0.7])) for _ in range(200)}
+    assert sides == {"right", "top"}
