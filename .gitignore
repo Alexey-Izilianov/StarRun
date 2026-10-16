@@ -1,0 +1,33 @@
+# Окружение и кэши Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Сборка .exe (Nuitka / PyInstaller)
+build/
+dist/
+*.build/
+*.dist/
+*.onefile-build/
+
+# Blender: автосохранения и рендеры референсной сцены (скрипты в tools/ — в репозитории)
+*.blend1
+*.blend2
+tools/refscene/*.png
+
+# Скриншоты и логи прогонов
+screenshots/
+*.log
+
+# Редакторы и Windows
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

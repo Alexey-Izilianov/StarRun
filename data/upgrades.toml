@@ -1,0 +1,137 @@
+# Улучшения за уровень. mode = "mult": характеристика × (1 + бонус редкости);
+# mode = "add": + value × (бонус редкости / бонус обычной), integer — округлить вверх.
+# group: weapon — оружие и способность, passive — десантник.
+
+[[upgrade]]
+id = "speed"
+name = "Сервоприводы"
+text = "Скорость передвижения"
+stat = "speed"
+mode = "mult"
+group = "passive"
+
+[[upgrade]]
+id = "max_hp"
+name = "Усиленная броня"
+text = "Запас здоровья"
+stat = "max_hp"
+mode = "mult"
+group = "passive"
+
+[[upgrade]]
+id = "pickup"
+name = "Магнитный сборщик"
+text = "Радиус подбора опыта"
+stat = "pickup_radius"
+mode = "mult"
+group = "passive"
+
+[[upgrade]]
+id = "sprint"
+name = "Форсаж"
+text = "Скорость бега"
+stat = "sprint_mult"
+mode = "mult"
+group = "passive"
+
+[[upgrade]]
+id = "regen"
+name = "Медблок"
+text = "Регенерация здоровья, ХП/с"
+stat = "regen"
+mode = "add"
+value = 0.6
+group = "passive"
+
+[[upgrade]]
+id = "dodge"
+name = "Рефлексы"
+text = "Шанс уклонения"
+stat = "dodge"
+mode = "add"
+value = 0.03
+group = "passive"
+
+[[upgrade]]
+id = "damage"
+name = "Тактическая подготовка"
+text = "Общий урон"
+stat = "damage_mult"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "range"
+name = "Баллистический вычислитель"
+text = "Дальность полёта снарядов"
+stat = "range_mult"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "reload"
+name = "Быстрая перезарядка"
+text = "Скорость перезарядки"
+stat = "reload_mult"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "ammo"
+name = "Расширенный магазин"
+text = "Боезапас"
+stat = "ammo_mult"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "mar_damage"
+name = "MAR: калибр"
+text = "Урон MAR"
+stat = "mar_damage"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "mar_rate"
+name = "MAR: облегчённый затвор"
+text = "Скорострельность MAR"
+stat = "mar_rate"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "mar_pierce"
+name = "MAR: бронебойные патроны"
+text = "Пуля пробивает ещё одного жука"
+stat = "mar_pierce"
+mode = "add"
+value = 1
+integer = true
+max_rank = 3
+group = "weapon"
+
+[[upgrade]]
+id = "mar_crit"
+name = "MAR: экспансивные пули"
+text = "Шанс двойного урона"
+stat = "mar_crit"
+mode = "add"
+value = 0.05
+group = "weapon"
+
+[[upgrade]]
+id = "orbital_rate"
+name = "Приоритет связи"
+text = "Перезарядка удара с орбиты"
+stat = "orbital_rate"
+mode = "mult"
+group = "weapon"
+
+[[upgrade]]
+id = "orbital_radius"
+name = "Тяжёлый заряд"
+text = "Радиус удара с орбиты"
+stat = "orbital_radius"
+mode = "mult"
+group = "weapon"

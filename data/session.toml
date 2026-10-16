@@ -1,0 +1,71 @@
+# Темп забега: шкала тревоги, спавн, опыт. См. концепт: «Забег и динамическая сессия».
+
+[alert]
+per_minute = 5.5            # без заданий королева выходит на ~18-й минуте
+semi_boss_kill = 5
+queen_min_minute = 12       # раньше королева не выходит даже при 100 %
+
+[bosses]
+semi_boss_minutes = [5, 10, 15]
+
+[evac]
+seconds = 60                # сколько нужно простоять в зоне
+distance = 900              # зона появляется на таком расстоянии от игрока
+radius = 180
+
+[spawn]
+start_population = 40
+full_population = 380
+full_minute = 12
+cap = 400
+max_per_second = 60
+margin = 80                 # насколько за краем экрана появляются жуки
+despawn_distance = 2400     # отставшие жуки переносятся вперёд
+rush_start = 40             # «пила»: 40 с ровного напора, затем 20 с налёта с одной стороны
+rush_length = 20
+rush_base = 30
+rush_per_minute = 6
+warrior_from_minute = 2
+warrior_share_max = 0.18
+warrior_share_minute = 10
+
+[xp]
+base = 5                    # опыт до 2-го уровня
+linear = 4
+quad = 0.35
+
+[[rarity]]
+name = "Обычное"
+color = [225, 225, 220]
+bonus = 0.07
+weight = 55
+
+[[rarity]]
+name = "Необычное"
+color = [96, 200, 90]
+bonus = 0.10
+weight = 25
+
+[[rarity]]
+name = "Редкое"
+color = [80, 150, 240]
+bonus = 0.14
+weight = 12
+
+[[rarity]]
+name = "Эпическое"
+color = [175, 100, 230]
+bonus = 0.19
+weight = 5
+
+[[rarity]]
+name = "Легендарное"
+color = [240, 200, 60]
+bonus = 0.25
+weight = 2.5
+
+[[rarity]]
+name = "Мифическое"
+color = [235, 70, 60]
+bonus = 0.33
+weight = 0.5

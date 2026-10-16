@@ -1,0 +1,19 @@
+# Оружие и активная способность. Этап 1 — только MAR и орбитальный удар.
+
+[mar]
+name = "MAR"
+damage = 8
+fire_rate = 8               # выстрелов в секунду
+range = 600
+bullet_speed = 1100
+spread_deg = 3
+magazine = 40
+reload = 1.8
+
+[orbital]
+name = "Удар с орбиты"
+delay = 1.5                 # от метки до взрыва
+radius = 220
+damage = 150
+cooldown = 40
+max_range = 800             # метку нельзя поставить дальше
