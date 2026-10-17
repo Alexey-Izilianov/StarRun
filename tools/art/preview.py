@@ -64,9 +64,20 @@ def _shoot(path, target, pitch, yaw, dist, lens=50):
     bpy.ops.render.render(write_still=True)
 
 
-def _hide(model, hide):
+def _owner(o):
+    """Подмеш, которому принадлежит светящийся объект «<подмеш>_glow_<ключ>»."""
+    return o.name.split("_glow_")[0]
+
+
+def _show(model, visible):
     for name, o in model.objects.items():
-        o.hide_render = name in hide
+        o.hide_render = not visible(name)
+    for go, _ in getattr(model, "glow_objects", []):
+        go.hide_render = not visible(_owner(go))
+
+
+def _hide(model, hide):
+    _show(model, lambda name: name not in hide)
 
 
 def model_views(model, name, target=(0, 0, 1.0), dist=4.0, views=("game", "game_face", "hero", "side"),
@@ -94,8 +105,7 @@ def anim_strip(model, name, clips, phases=6, dist=4.0, target=(0, 0, 1.0), view=
         act = bpy.data.actions[clip]
         arm.animation_data.action = act
         visible = (show or {}).get(clip, ("body", "mar"))
-        for n, o in model.objects.items():
-            o.hide_render = n not in visible
+        _show(model, lambda n: n in visible)
         end = int(act.frame_end)
         for i in range(phases):
             f = round(i * end / (phases - (1 if not act.use_cyclic else 0)))

@@ -19,8 +19,9 @@ from starrun.sim import terrain as T
 from starrun.sim.swarm import BRAIN, FLYER, QUEEN, SEMI_BOSS, SPITTER, TANKER, WARRIOR, WORKER
 from starrun.sim.world import World
 from starrun.ui import mesh3d as M
+from starrun.ui.fx3d import GROUND_LIGHT_FS, Effects3D, Light, flame_puffs
 from starrun.ui.gl3d import PX_PER_M, Camera3D, look_at, ortho
-from starrun.ui.scene import SceneRenderer
+from starrun.ui.scene import ARC_LIFE, SceneRenderer
 from starrun.ui.terrain_view import TerrainView, cell_hash
 
 MODELS = Path(__file__).resolve().parents[3] / "assets" / "models"
@@ -54,6 +55,7 @@ WINDUP = (WARRIOR, SPITTER)       # замах по сигналу симуля�
 BOSS_CLIPS = {QUEEN: (("attack", "timer_a", "volley_every"), ("summon", "timer_b", "summon_every")),
               SEMI_BOSS: (("windup", "timer_b", "summon_every"),)}
 FALL_TIME = 0.5                   # убитый летающий падает на землю
+GUNS = ("mar", "shotgun", "sniper", "flame", "rocket", "shock")   # подмеши стволов в модели десантника
 
 
 def tree_mesh(kind: str, color: tuple[int, int, int]) -> list[M.Part]:
@@ -107,7 +109,7 @@ class Scene3D:
         self.static = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.STATIC_FS)
         self.static_depth = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.DEPTH_FS)
         self.receiver = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=M.RECEIVER_FS)
-        names = {"marine"} | {look[0] for look in BUG_LOOK.values()}
+        names = {"marine", "turret"} | {look[0] for look in BUG_LOOK.values()}
         self.models = {n: M.SkinnedModel(ctx, MODELS / f"{n}.npz") for n in sorted(names)}
         self.trees: dict[tuple[str, tuple[int, int, int]], M.StaticMesh] = {}
         wall, glass, door = (0.36, 0.37, 0.39), (0.42, 0.62, 0.7), (0.42, 0.29, 0.18)
@@ -135,12 +137,17 @@ class Scene3D:
         self.quad_geometry = ctx.geometry([arcade.gl.BufferDescription(self.quad, "2f", ["in_pos"])],
                                           mode=ctx.TRIANGLE_STRIP)
         self.light = np.identity(4)
+        self.fx = Effects3D(ctx)
+        self.ground_light = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=GROUND_LIGHT_FS)
+        self.point_lights: dict[str, tuple[float, ...]] = {}
         self._props_key: tuple | None = None  # type: ignore[type-arg]
         self._props_cache: list[tuple[M.StaticMesh, np.ndarray]] = []
         self.reset()
 
     def reset(self) -> None:
         self.time = 0.0
+        if hasattr(self, "fx"):
+            self.fx.reset()
         self.corpses: list[Corpse] = []
         self.prev_alive: np.ndarray | None = None
         self.marine_clip, self.marine_t = "idle", 0.0
@@ -159,6 +166,7 @@ class Scene3D:
                 self.corpses.append(Corpse(sw.pos[i].copy(), math.atan2(to[1], to[0]) - math.pi / 2, name,
                                            float(sw.radius[i]) / r0, tint, lift))
         self.prev_alive = sw.alive.copy()
+        self.fx.update(dt, world)
         for c in self.corpses:
             c.age += dt
         self.corpses = [c for c in self.corpses if c.age < CORPSE_LIFE][-300:]
@@ -196,13 +204,19 @@ class Scene3D:
         roofs = self._roofs(world, scene.map)
         units = self._units(world)
 
+        arcs = [Light((float(a.points[len(a.points) // 2][0]), float(a.points[len(a.points) // 2][1]), 52.0), 220.0,
+                      (0.6, 1.0, 1.6), ARC_LIFE, age=ARC_LIFE - a.left) for a in scene.arcs]
+        self.point_lights = self.fx.light_uniforms(arcs)
         self._shadow_pass(cam, props, units)
         cam.apply(ctx)
         ctx.disable(ctx.DEPTH_TEST)
         scene.ground_layers(world, view, solid=False)
+        scene.turret_rings(world)
+        scene.blast_rings()
         self._blob_shadows(world, shapes)
         shapes.flush()
         self._receive_shadows(cam, rect)
+        self._ground_lights(cam)
 
         ctx.enable(ctx.DEPTH_TEST)
         self._set_common(self.static, cam.view_proj, cam)
@@ -215,9 +229,10 @@ class Scene3D:
         for mesh, inst in roofs:
             mesh.draw(self.static, inst)
         ctx.disable(ctx.DEPTH_TEST)
+        self.fx.draw(cam.view_proj, cam.view, flame_puffs(world))
 
         shapes.lift = EFFECTS_LIFT
-        scene.effects(world)
+        scene.effects(world, volumetric=True)
         shapes.flush()
         shapes.lift = 0.0
 
@@ -225,7 +240,7 @@ class Scene3D:
         values: dict[str, object] = {"u_vp": tuple(vp.T.ravel()), "u_px": PX_PER_M, "u_anim": 1}
         if cam is not None:
             values.update(u_albedo=2, u_mask=3, u_sun=tuple(SUN), u_eye=tuple(cam.eye), u_shadow=4,
-                          u_light=tuple(self.light.T.ravel()), u_texel=1.0 / SHADOW_SIZE)
+                          u_light=tuple(self.light.T.ravel()), u_texel=1.0 / SHADOW_SIZE, **self.point_lights)
             self.shadow_tex.use(4)
         for name, value in values.items():
             with contextlib.suppress(KeyError):   # униформы нет в шейдере (или компилятор выкинул неиспользуемую)
@@ -245,10 +260,17 @@ class Scene3D:
         for mesh, inst in props:
             mesh.draw(self.static_depth, inst)
         for name, inst, subs in units:
-            if name == "marine":          # жуки — пятнами (_blob_shadows): толпа дорога для карты теней
+            if name in ("marine", "turret"):   # жуки — пятнами (_blob_shadows): толпа дорога для карты теней
                 self.models[name].draw(self.skinned_depth, inst, subs, depth=True)
         ctx.disable(ctx.DEPTH_TEST)
         ctx.screen.use()
+
+    def _ground_lights(self, cam: Camera3D) -> None:
+        """Свет взрывов и выстрелов на землю: тот же квад, что под тени, — сложением."""
+        self._set_common(self.ground_light, cam.view_proj, cam)
+        self.ctx.blend_func = self.ctx.BLEND_ADDITIVE
+        self.quad_geometry.render(self.ground_light)
+        self.ctx.blend_func = self.ctx.BLEND_DEFAULT
 
     def _receive_shadows(self, cam: Camera3D, rect: tuple[float, float, float, float]) -> None:
         l, b, r, t = rect  # noqa: E741
@@ -367,6 +389,37 @@ class Scene3D:
             size = np.array([c.scale * 30 for c in self.corpses], np.float32)
             shapes.add(pos + off * 6, size, np.array(BLOB, np.float32))
 
+    def _marine_subs(self, world: World) -> tuple[str, ...]:
+        """Тело и выбранный ствол (турель ставится сама — в руках MAR), топор — только в рубке. Свечение
+        «<подмеш>_glow_<ключ>» включается вместе со своим подмешем, «glow_<ключ>» — с телом."""
+        gun = world.weapons[world.active].id if world.weapons else "mar"
+        shown = {"body", gun if gun in GUNS else "mar"} | ({"axe"} if self.marine_clip == "chop" else set())
+
+        def owner(sub: str) -> str:
+            return sub.split("_glow_")[0] if "_glow_" in sub else "body"
+        return tuple(s for s in self.models["marine"].all_subs() if (s if "glow" not in s else owner(s)) in shown)
+
+    def _turrets(self, world: World) -> list[tuple[str, np.ndarray, tuple[str, ...]]]:
+        """Мини-турели: голова — к цели (поворот всей модели), отдача — пока откат свежий."""
+        t = world.turrets
+        idx = np.flatnonzero(t.alive)
+        if not len(idx):
+            return []
+        model = self.models["turret"]
+        yaw = np.arctan2(t.aim[idx, 1], t.aim[idx, 0]) - math.pi / 2
+        a, b, f = model.frames("idle", self.time + idx * 0.7)
+        period = 1 / (t.cfg.fire_rate * world.stats["turret_rate"])
+        since = period - t.cooldown[idx]
+        shot = (since >= 0) & (since < model.duration("fire"))
+        if shot.any():
+            a[shot], b[shot], f[shot] = model.frames("fire", since[shot])
+        inst = np.zeros((len(idx), 12), np.float32)
+        inst[:, 0:2] = t.pos[idx]
+        inst[:, 3] = yaw
+        inst[:, 4], inst[:, 5], inst[:, 6] = a, b, f
+        inst[:, 7] = 1.0
+        return [("turret", inst, model.all_subs())]
+
     def _units(self, world: World) -> list[tuple[str, np.ndarray, tuple[str, ...]]]:
         out: list[tuple[str, np.ndarray, tuple[str, ...]]] = []
         # десантник
@@ -376,8 +429,8 @@ class Scene3D:
         yaw = math.atan2(p.facing[1], p.facing[0]) - math.pi / 2
         hurt = (0.9, 0.2, 0.15, 0.35) if p.hurt > 0 else (0, 0, 0, 0)
         inst = np.array([[p.pos[0], p.pos[1], 0.0, yaw, a, b, f, 1.0, *hurt]], np.float32)
-        skip = () if self.marine_clip == "chop" else ("axe",)
-        out.append(("marine", inst, mar.all_subs(skip)))
+        out.append(("marine", inst, self._marine_subs(world)))
+        out += self._turrets(world)
         # жуки
         sw = world.swarm
         idx = sw.alive_idx

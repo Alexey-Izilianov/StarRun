@@ -94,8 +94,8 @@ class RigModel(Model):
         by_sub = {}
         glows = {}
         for o in self.parts:
-            if PAL[o["key"]][3] > 0:
-                glows.setdefault(o["key"], []).append(o)
+            if PAL[o["key"]][3] > 0:                  # свечение — по подмешу: подсветка ствола гаснет с ним
+                glows.setdefault((o.get("sub", "body"), o["key"]), []).append(o)
             else:
                 by_sub.setdefault(o.get("sub", "body"), []).append(o)
         self.objects = {sub: self._join(lst, sub, (0, 0, 0)) for sub, lst in by_sub.items()}
@@ -109,8 +109,8 @@ class RigModel(Model):
                 bpy.ops.object.modifier_apply(modifier="dec")
         body = self.objects["body"]
         self.glow_objects = []
-        for key, lst in glows.items():
-            go = self._join(lst, "body_glow_" + key, (0, 0, 0))
+        for (sub, key), lst in glows.items():
+            go = self._join(lst, f"{sub}_glow_{key}", (0, 0, 0))
             go["material"] = f"{self.name}_glow_{key}"
             self.glow_objects.append((go, "body"))
 

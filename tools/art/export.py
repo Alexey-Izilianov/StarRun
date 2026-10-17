@@ -3,7 +3,8 @@
 #
 # Состав .npz:
 #   positions (n,3) f32, normals (n,3) f32, uvs (n,2) f32, bones (n,) u8, indices (m,) u32 — треугольники;
-#   sub_names (k,) — подмеши: body, оружие, топор, glow_<ключ>; sub_ranges (k,2) — начало и длина в indices;
+#   sub_names (k,) — подмеши: body, стволы, топор, glow_<ключ> (тела), <подмеш>_glow_<ключ>;
+#   sub_ranges (k,2) — начало и длина в indices;
 #   sub_glow (k,4) — цвет и сила свечения (0 — обычный запечённый материал);
 #   bone_names, bone_parents (−1 — корень), bone_heads (b,3) — суставы в покое (точки крепления: дуло, кисть);
 #   clip_names, clip_ranges (c,2) — первый кадр и число кадров в clip_data, clip_loop (c,) bool,
@@ -58,9 +59,10 @@ def export(model, extra=None):
     bone_index = {b.name: i for i, b in enumerate(bones)}
     meshes = [(name, o, (0, 0, 0, 0)) for name, o in model.objects.items() if o.type == 'MESH']
     for go, _ in model.glow_objects:
-        key = go.name.split("_glow_")[1]
+        owner, key = go.name.split("_glow_")
         col, _, _, glow = style.PAL[key]
-        meshes.append(("glow_" + key, go, (*col, glow)))
+        # свечение тела — «glow_<ключ>», подмеша — «<подмеш>_glow_<ключ>»: игра включает его вместе с подмешем
+        meshes.append(("glow_" + key if owner == "body" else go.name, go, (*col, glow)))
 
     pos, nrm, uv, bone, idx, sub_names, sub_ranges, sub_glow = [], [], [], [], [], [], [], []
     base = start = 0

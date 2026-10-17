@@ -3,7 +3,8 @@
 
 Скиннинг на видеокарте: у вершины одна кость (жёсткая привязка), матрицы костей всех клипов лежат в текстуре
 (строка — кадр, по три тексела на кость), экземпляр несёт два кадра и долю смешивания между ними.
-Свет: солнце с полусферическим окружением, блик по маске металл/гладкость, тень из карты теней 3×3.
+Свет: солнце с полусферическим окружением, блик по маске металл/гладкость, тень из карты теней (билинейно),
+точечные источники от взрывов и выстрелов.
 """
 
 from __future__ import annotations
@@ -17,7 +18,26 @@ import numpy as np
 from arcade.gl import BufferDescription
 from PIL import Image
 
-LIGHT = """
+# Точечный свет (взрывы, выстрелы, огонь — ui/fx3d.py): до восьми источников, затухание к радиусу квадратом
+POINT_LIGHTS = """
+uniform vec4 u_pl_pos[8];      // x, y, z, радиус (0 — нет источника)
+uniform vec4 u_pl_col[8];      // цвет × сила
+vec3 point_lights(vec3 n, vec3 wp) {
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+        vec4 p = u_pl_pos[i];
+        if (p.w <= 0.0) continue;
+        vec3 d = p.xyz - wp;
+        float dist = length(d);
+        float a = clamp(1.0 - dist / p.w, 0.0, 1.0);
+        float ndl = max(dot(n, d / max(dist, 1e-3)), 0.0) * 0.75 + 0.25;
+        sum += u_pl_col[i].rgb * a * a * ndl;
+    }
+    return sum;
+}
+"""
+
+LIGHT = POINT_LIGHTS + """
 uniform vec3 u_sun;            // направление к солнцу
 uniform vec3 u_eye;
 uniform sampler2D u_shadow;    // глубина без аппаратного сравнения: sampler2DShadow Arcade не поддерживает
@@ -50,7 +70,7 @@ vec3 shade(vec3 albedo, vec3 n, vec3 wp, float metal, float gloss) {
     float spec = pow(max(dot(n, h), 0.0), mix(6.0, 48.0, gloss)) * gloss * (0.25 + 0.75 * sh);
     col += mix(vec3(1.0), albedo * 2.0, metal) * spec * 0.45;
     float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.12;                             // кромка силуэта
-    return col + vec3(rim);
+    return col + vec3(rim) + albedo * point_lights(n, wp);
 }
 """
 

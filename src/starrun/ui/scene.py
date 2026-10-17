@@ -181,11 +181,13 @@ class SceneRenderer:
         if a.alive.any():
             c.add(a.pos[a.alive], 16, ACID)
 
-    def effects(self, world: World) -> None:
-        """Над всем: снаряды, пламя, брызги, молнии, вспышки взрывов, полоски здоровья боссов."""
+    def effects(self, world: World, volumetric: bool = False) -> None:
+        """Над всем: снаряды, пламя, брызги, молнии, вспышки взрывов, полоски здоровья боссов. volumetric — в 3D:
+        пламя и огненные шары взрывов рисует ui/fx3d.py, кольца взрывов — на земле (blast_rings)."""
         c = self.c
         self._projectiles(world)
-        self._flames(world)
+        if not volumetric:
+            self._flames(world)
 
         sp = world.splashes
         if sp.alive.any():
@@ -195,11 +197,19 @@ class SceneRenderer:
             c.add(sp.pos[k], sp.size[k], color)
 
         self._arcs()
+        if not volumetric:
+            for b in self.blasts:
+                t = b.left / b.total
+                c.add_one(*b.pos, b.radius * 2 * (1.1 - 0.3 * t), rgba((255, 200, 120), 0.55 * t))
+                c.add_one(*b.pos, b.radius * 2, rgba(b.color, 0.8 * t), ring=0.06)
+        self._boss_bars(world)
+
+    def blast_rings(self) -> None:
+        """Ударная волна и опалина взрыва на земле (3D)."""
         for b in self.blasts:
             t = b.left / b.total
-            c.add_one(*b.pos, b.radius * 2 * (1.1 - 0.3 * t), rgba((255, 200, 120), 0.55 * t))
-            c.add_one(*b.pos, b.radius * 2, rgba(b.color, 0.8 * t), ring=0.06)
-        self._boss_bars(world)
+            self.c.add_one(*b.pos, b.radius * 2 * (1.15 - 0.45 * t), rgba(b.color, 0.7 * t), ring=0.05)
+            self.c.add_one(*b.pos, b.radius * 1.1, rgba((20, 14, 10), 0.35 * t))
 
     # ---------- слои ----------
     def _marine(self, world: World) -> None:
@@ -317,6 +327,13 @@ class SceneRenderer:
         q = kind == QUEEN
         if q.any():
             c.add(pos[q], radius[q] * 1.3, rgba((200, 230, 60), 0.5 + 0.2 * np.sin(self.time * 4)))
+
+    def turret_rings(self, world: World) -> None:
+        """Под турелью в 3D — только кольцо оставшегося срока."""
+        t = world.turrets
+        idx = np.flatnonzero(t.alive)
+        if len(idx):
+            self.c.add(t.pos[idx], 40, rgba((200, 210, 150), 0.5), ring=0.1 * t.life[idx] / t.max_life[idx] + 0.02)
 
     def _turrets(self, world: World) -> None:
         t = world.turrets

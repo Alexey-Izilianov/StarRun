@@ -1,10 +1,11 @@
 # Десантник мобильной пехоты в человеческих пропорциях (рост 1,85 м, шлем 0,26 м, плечи с наплечниками 0,66 м):
 # оливковая броня поверх тёмного подкостюма, закрытый шлем с тёмным стеклом и подсветкой, ранец с баллонами.
-# Подмеши: mar — винтовка на кости weapon (кисти держат её через IK), axe — топор в правой кисти (только в рубке).
+# Подмеши: стволы на кости weapon (кисти держат их через IK; MAR — здесь, остальные — guns.py; игра включает
+# выбранный), axe — топор в правой кисти (только в рубке). Мини-турель — отдельная модель turret.
 # Запуск: blender.exe -b --python marine.py [-- --fast]
 import sys, os, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import style, rig, export
+import style, rig, export, guns
 from style import around
 from rig import RigModel, keyed, add
 
@@ -302,7 +303,7 @@ def actions(m):
 
 
 def build():
-    m = RigModel("marine", JOINTS, tex_size=512 if FAST else 1024)
+    m = RigModel("marine", JOINTS, tex_size=512 if FAST else 2048)    # тело и шесть стволов в одной текстуре
     m.camo_scale = 8.0
     legs(m)
     waist(m)
@@ -311,6 +312,9 @@ def build():
     arms(m)
     helmet(m)
     mar(m)
+    x, _, z = P("weapon")
+    for gun in (guns.shotgun, guns.sniper, guns.flame, guns.rocket, guns.shock):
+        gun(m, x, z)
     axe(m)
     m.build()
     m.bake(samples=8 if FAST else 64)
@@ -319,11 +323,27 @@ def build():
     return m
 
 
+def build_turret():
+    m = guns.turret()
+    m.bake(samples=8 if FAST else 64)
+    guns.turret_actions(m)
+    export.export(m)
+    return m
+
+
+GUNS = ("mar", "shotgun", "sniper", "flame", "rocket", "shock")
+
 if __name__ == "__main__":
     style.reset()
     m = build()
     import preview
-    preview.model_views(m, "marine", target=(0, 0.1, 1.0), dist=3.8, hide=("axe",))
+    for gun in GUNS:
+        preview.model_views(m, "marine_" + gun, target=(0, 0.3, 1.1), dist=2.2, views=("hero", "side"),
+                            hide=("axe",) + tuple(g for g in GUNS if g != gun))
+    preview.model_views(m, "marine", target=(0, 0.1, 1.0), dist=3.8, hide=("axe",) + GUNS[1:])
     preview.anim_strip(m, "marine", ("run_f", "run_r", "chop", "vault", "die"), dist=4.4, target=(0, 0.1, 0.95),
                        show={"chop": ("body", "mar", "axe")})
+    style.reset()
+    t = build_turret()
+    preview.model_views(t, "turret", target=(0, 0, 0.35), dist=1.8)
     print("MARINE DONE", flush=True)
