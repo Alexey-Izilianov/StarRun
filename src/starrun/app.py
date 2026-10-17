@@ -1,6 +1,6 @@
 """Окно игры: камеры, ввод, переключение между игрой, паузой, статистикой и выбором улучшения.
 
-Запуск: python -m starrun [--windowed] [--seed N] [--biome desert|forest|jungle|swamp|plain]
+Запуск: python -m starrun [--windowed] [--seed N] [--biome desert|forest|jungle|swamp|plain] [--2d]
 """
 
 from __future__ import annotations
@@ -14,9 +14,11 @@ from arcade.types import LRBT
 
 from starrun.balance import BIOME_IDS, Balance
 from starrun.sim.world import Controls, World
+from starrun.ui.gl3d import Camera3D
 from starrun.ui.hud import H, Hud
 from starrun.ui.render import Shapes
 from starrun.ui.scene import GROUND, SceneRenderer
+from starrun.ui.scene3d import Scene3D
 
 MOVE_KEYS = {
     arcade.key.W: (0, 1), arcade.key.UP: (0, 1),
@@ -35,13 +37,16 @@ class Mode(Enum):
 
 
 class Game(arcade.Window):
-    def __init__(self, windowed: bool, seed: int | None, biome: str = BIOME_IDS[0]) -> None:
+    def __init__(self, windowed: bool, seed: int | None, biome: str = BIOME_IDS[0], flat: bool = False) -> None:
         super().__init__(1600, 900, "StarRun", fullscreen=not windowed, resizable=True, vsync=True,
                          update_rate=1 / 120, draw_rate=1 / 120)
         self.balance = Balance.load()
         self.seed = seed
         self.biome = biome
         self.shapes = Shapes(self.ctx)
+        self.flat = flat                             # прежняя 2D-картинка вместо 3D
+        self.cam3 = Camera3D()
+        self.scene3d = None if flat else Scene3D(self.ctx)
         self.world_cam = arcade.Camera2D()
         self.ui_cam = arcade.Camera2D()
         self.vw = 1920.0
@@ -60,6 +65,9 @@ class Game(arcade.Window):
         biome = None if self.biome == "plain" else self.biome
         self.world = World(self.balance, self.seed, biome)
         self.scene = SceneRenderer(self.shapes)
+        if self.scene3d:
+            self.scene3d.reset()
+            self._follow(0.0)
         self.hud = Hud(self.shapes)
         self.mode = Mode.PLAY
         self.background_color = self.balance.biomes[biome].ground if biome else GROUND
@@ -94,8 +102,13 @@ class Game(arcade.Window):
         target = None
         if self.ability_pressed:
             self.ability_pressed = False
-            p = self.world_cam.unproject(self.mouse_screen)
-            target = (p.x, p.y)
+            if self.scene3d:
+                w, h = self.get_size()
+                g = self.cam3.ground_point(2 * self.mouse_screen[0] / w - 1, 2 * self.mouse_screen[1] / h - 1)
+                target = (float(g[0]), float(g[1]))
+            else:
+                p = self.world_cam.unproject(self.mouse_screen)
+                target = (p.x, p.y)
         select, self.slot_pressed = self.slot_pressed, None
         cycle, self.wheel = self.wheel, 0
         return Controls((dx, dy), sprint, target, select, cycle)
@@ -154,10 +167,22 @@ class Game(arcade.Window):
             w.step(delta_time, self.controls())
             self._react(w.events)
             self.scene.update(delta_time, w)
+            if self.scene3d:
+                self.scene3d.update(delta_time, w)
         self.hud.update(delta_time if running else 0.0)
         self.shake = max(0.0, self.shake - delta_time * 30)
-        jitter = np.random.uniform(-1, 1, 2) * self.shake
+        self._follow(self.shake)
+
+    def _follow(self, shake: float) -> None:
+        """Камера — за десантником (с тряской); в 3D мир узнаёт, какой кусок земли виден: жуки — за его краем."""
+        w = self.world
+        jitter = np.random.uniform(-1, 1, 2) * shake
         self.world_cam.position = (float(w.player.pos[0] + jitter[0]), float(w.player.pos[1] + jitter[1]))
+        if self.scene3d:
+            width, height = self.get_size()
+            self.cam3.shake = jitter
+            self.cam3.update(w.player.pos, width / max(1, height))
+            w.view_half = self.cam3.view_half()
 
     def _react(self, events: list[str]) -> None:
         heal = round(self.balance.items.medkit_heal * 100)
@@ -183,16 +208,22 @@ class Game(arcade.Window):
                 self.shake = max(self.shake, 10.0)
 
     def world_to_ui(self, pos: np.ndarray) -> tuple[float, float]:
+        if self.scene3d:
+            x, y = self.cam3.to_ndc(pos)
+            return (x + 1) / 2 * self.vw, (y + 1) / 2 * H
         cx, cy = self.world_cam.position
         return float(pos[0] - cx + self.vw / 2), float(pos[1] - cy + H / 2)
 
     def on_draw(self) -> None:
         self.clear()
         w = self.world
-        with self.world_cam.activate():
-            cx, cy = self.world_cam.position
-            view = (cx - self.vw / 2, cy - H / 2, cx + self.vw / 2, cy + H / 2)
-            self.scene.draw(w, view)
+        if self.scene3d:
+            self.scene3d.draw(w, self.cam3, self.scene, self.shapes)
+        else:
+            with self.world_cam.activate():
+                cx, cy = self.world_cam.position
+                view = (cx - self.vw / 2, cy - H / 2, cx + self.vw / 2, cy + H / 2)
+                self.scene.draw(w, view)
         with self.ui_cam.activate():
             self.hud.draw(w, self.vw, self.world_to_ui)
             if w.session.over:
@@ -216,8 +247,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None, help="зерно случайности — повторить забег")
     parser.add_argument("--biome", default=BIOME_IDS[0], choices=(*BIOME_IDS, "plain"),
                         help="с какого биома начать (дальше — по кругу); plain — ровная земля без карты")
+    parser.add_argument("--2d", dest="flat", action="store_true", help="прежняя 2D-картинка вместо 3D")
     args = parser.parse_args()
-    Game(args.windowed, args.seed, args.biome)
+    Game(args.windowed, args.seed, args.biome, args.flat)
     arcade.run()
 
 

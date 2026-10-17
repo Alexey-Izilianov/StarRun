@@ -193,16 +193,17 @@ class TerrainView:
         k = t.kinds_at(pos)
         return ((k == T.GROUND) | (k == T.STUMP)) & (t.soil_at(pos) == T.PLAIN)
 
-    def objects(self, world: World) -> None:
-        """Над землёй, под жуками: стены, двери, окна, заборы, скалы, лес, находки."""
+    def objects(self, world: World, solid: bool = True) -> None:
+        """Над землёй, под жуками: стены, двери, окна, заборы, скалы, лес (solid) и находки."""
         t = world.terrain
         if t is None or self.win is None:
             return
         kind, _, x0, y0 = self.win
-        self._walls(kind, x0, y0, t)
-        self._fences(kind, x0, y0, t.cell)
-        self._rocks(kind, x0, y0, t.cell)
-        self._trees(world, kind, x0, y0)
+        if solid:
+            self._walls(kind, x0, y0, t)
+            self._fences(kind, x0, y0, t.cell)
+            self._rocks(kind, x0, y0, t.cell)
+            self._trees(world, kind, x0, y0)
         self._items(world)
 
     def roofs(self, world: World) -> None:

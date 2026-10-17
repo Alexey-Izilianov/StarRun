@@ -116,6 +116,19 @@ class SceneRenderer:
         self.arcs = [a for a in self.arcs if a.left > 0]
 
     def draw(self, world: World, view: tuple[float, float, float, float]) -> None:
+        """Весь мир в 2D: земля, юниты кругами, крыши, эффекты."""
+        self.ground_layers(world, view)
+        self._bugs(world, flying=False)
+        self._turrets(world)
+        self._marine(world)
+        self.map.roofs(world)
+        self._bugs(world, flying=True)
+        self.effects(world)
+        self.c.flush()
+
+    def ground_layers(self, world: World, view: tuple[float, float, float, float], solid: bool = True) -> None:
+        """Всё, что лежит на земле: карта, камушки, пятна, напалм, зона эвакуации, метки, кристаллы, кислота.
+        solid=False — без стен, леса, заборов и скал (в 3D они — модели)."""
         c = self.c
         left, bottom, right, top = view
         self.map.prepare(world, view)
@@ -144,7 +157,7 @@ class SceneRenderer:
                 c.add(d.pos[idx] + offset, d.size[idx] * 2 * scale, color)
 
         self._napalm(world)
-        self.map.objects(world)
+        self.map.objects(world, solid)
 
         if world.evac_pos is not None:
             r = world.balance.evac.radius
@@ -168,12 +181,9 @@ class SceneRenderer:
         if a.alive.any():
             c.add(a.pos[a.alive], 16, ACID)
 
-        self._bugs(world, flying=False)
-        self._turrets(world)
-        self._marine(world)
-        self.map.roofs(world)
-
-        self._bugs(world, flying=True)
+    def effects(self, world: World) -> None:
+        """Над всем: снаряды, пламя, брызги, молнии, вспышки взрывов, полоски здоровья боссов."""
+        c = self.c
         self._projectiles(world)
         self._flames(world)
 
@@ -190,7 +200,6 @@ class SceneRenderer:
             c.add_one(*b.pos, b.radius * 2 * (1.1 - 0.3 * t), rgba((255, 200, 120), 0.55 * t))
             c.add_one(*b.pos, b.radius * 2, rgba(b.color, 0.8 * t), ring=0.06)
         self._boss_bars(world)
-        c.flush()
 
     # ---------- слои ----------
     def _marine(self, world: World) -> None:

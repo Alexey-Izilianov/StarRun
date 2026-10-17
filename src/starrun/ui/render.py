@@ -14,6 +14,7 @@ from arcade.gl import BufferDescription
 VERTEX = """
 #version 330
 uniform WindowBlock { mat4 projection; mat4 view; } window;
+uniform float u_lift;                       // высота слоя над землёй (в 3D: пули и пламя — на уровне груди)
 in vec2 in_corner;
 in vec2 in_pos;
 in vec2 in_size;
@@ -29,7 +30,7 @@ void main() {
     v_color = in_color;
     v_ring = in_ring;
     v_round = in_round;
-    gl_Position = window.projection * window.view * vec4(in_pos + in_corner * in_size * 0.5, 0.0, 1.0);
+    gl_Position = window.projection * window.view * vec4(in_pos + in_corner * in_size * 0.5, u_lift, 1.0);
 }
 """
 FRAGMENT = """
@@ -69,6 +70,7 @@ class Shapes:
         self.capacity = capacity
         self.data = np.zeros((capacity, FLOATS), np.float32)
         self.count = 0
+        self.lift = 0.0
         self.buffer = ctx.buffer(reserve=capacity * FLOATS * 4)
         corners = ctx.buffer(data=QUAD.tobytes())
         self.geometry = ctx.geometry(
@@ -132,6 +134,7 @@ class Shapes:
         if not self.count:
             return
         self.buffer.write(self.data[:self.count].tobytes())
+        self.program["u_lift"] = self.lift
         self.ctx.enable(self.ctx.BLEND)
         self.geometry.render(self.program, vertices=4, instances=self.count)
         self.count = 0

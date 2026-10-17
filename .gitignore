@@ -21,6 +21,9 @@ dist/
 *.blend1
 *.blend2
 tools/refscene/*.png
+tools/art/previews/
+tools/art/blend/
+tools/art/bake/
 
 # Скриншоты и логи прогонов
 screenshots/

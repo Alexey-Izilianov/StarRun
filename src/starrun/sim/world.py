@@ -17,7 +17,7 @@ from starrun.sim.swarm import KINDS, QUEEN, SEMI_BOSS, WORKER, Swarm
 from starrun.sim.terrain import DNA, FENCE, MAGNET, MEDKIT, MUD, SAND, TREE, UNDERBARREL, WEAPON_CRATE, WINDOW, Terrain
 from starrun.sim.weapons import Fires, Turrets, Weapon, make_weapon
 
-VIEW_HALF = (960.0, 540.0)  # полэкрана 1080p — мир всегда видится в этом масштабе
+VIEW_HALF = (960.0, 540.0)  # полэкрана 1080p в 2D; 3D-камера задаёт свой прямоугольник (World.view_half)
 MAX_DT = 1 / 30             # при подвисании кадра симуляция не перескакивает сквозь стены жуков
 EVAC_SPAWN_BOOST = 1.3      # пока ждём челнок, рой давит сильнее
 QUEEN_SPAWN_SHARE = 0.6     # при королеве обычных жуков меньше: свиту она призывает сама
@@ -97,6 +97,7 @@ class World:
         self.stats = Stats(b.player.stats, b.player.caps)
         self.player = Player(b.player.stamina, hp=self.stats["max_hp"], stamina=b.player.stamina.max)
         self.biome = biome
+        self.view_half = VIEW_HALF   # видимая область вокруг десантника: жуки появляются за её краем
         self.terrain = Terrain(b.map, b.biomes[biome], b.items, self.rng) if biome else None
         items = self.terrain.items if self.terrain else []
         self.item_pos = np.array([pos for pos, _ in items], np.float32).reshape(-1, 2)
@@ -202,12 +203,12 @@ class World:
 
         for event in s.update(dt):
             kind = SEMI_BOSS if event == "semi_boss" else QUEEN
-            where = self._boss_point(edge_positions(self.rng, 1, p.pos, VIEW_HALF, 120))
+            where = self._boss_point(edge_positions(self.rng, 1, p.pos, self.view_half, 120))
             self.swarm.spawn(kind, where, s.boss_hp_mult, s.damage_mult)
             self.events.append(event)
 
         boost = {Phase.EVAC: EVAC_SPAWN_BOOST, Phase.QUEEN: QUEEN_SPAWN_SHARE}.get(s.phase, 1.0)
-        for name, edge in self.spawner.update(dt, s.elapsed, self.swarm.count(), p.pos, VIEW_HALF, boost):
+        for name, edge in self.spawner.update(dt, s.elapsed, self.swarm.count(), p.pos, self.view_half, boost):
             pos, found = self._spawn_points(edge)
             pos = pos[found]  # не нашлось места — жук появится в другой раз
             kind = KINDS.index(name)
@@ -221,7 +222,7 @@ class World:
         if len(far):
             # Отставших — за край экрана по ходу движения: убежать от толпы насовсем нельзя
             side = front_side(self.rng, p.facing)
-            edge = edge_positions(self.rng, len(far), p.pos, VIEW_HALF, b.spawn.margin, side)
+            edge = edge_positions(self.rng, len(far), p.pos, self.view_half, b.spawn.margin, side)
             pos, found = self._spawn_points(edge)
             self.swarm.pos[far[found]] = pos[found]
 
@@ -546,7 +547,7 @@ class World:
         pos = np.where((pos < lo) | (pos > hi), 2 * self.player.pos - pos, pos)
         placed, found = t.place(np.clip(pos, lo, hi), SPAWN_RING, reachable=True)
         rel = np.abs(placed - self.player.pos)
-        found &= (rel[:, 0] > VIEW_HALF[0] + SPAWN_HIDDEN) | (rel[:, 1] > VIEW_HALF[1] + SPAWN_HIDDEN)
+        found &= (rel[:, 0] > self.view_half[0] + SPAWN_HIDDEN) | (rel[:, 1] > self.view_half[1] + SPAWN_HIDDEN)
         return placed, found
 
     def _boss_point(self, pos: np.ndarray) -> np.ndarray:

@@ -28,7 +28,7 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-extend-exclude = ["tools/refscene"]  # одноразовые скрипты Blender (bpy), не код игры
+extend-exclude = ["tools/refscene", "tools/art"]  # скрипты Blender (bpy) — запускаются внутри Blender, не код игры
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "PERF"]
