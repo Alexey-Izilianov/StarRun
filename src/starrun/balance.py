@@ -118,6 +118,7 @@ class WeaponCfg:
     mod_radius: float = 0.0
     mod_time: float = 0.0
     mod_count: int = 0
+    mod_found: bool = False         # модификацию не выбрать карточкой — только найти на карте
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,54 @@ class Upgrade:
 
 
 @dataclass(frozen=True)
+class MapCfg:
+    size: int
+    cell: float
+    border: int
+    start_clear: int
+    flow_radius: tuple[int, int]
+    flow_every: float
+    chop_every: float
+    door_hp: float
+    window_bug_speed: float
+    vault_speed: float
+    mud_speed: float
+    sand_bug_speed: float
+    sand_sink_rate: float
+    sand_recover: float
+    sand_damage: float
+    cactus_damage: float
+    cactus_every: float
+    evac_clear: int
+
+
+@dataclass(frozen=True)
+class ItemsCfg:
+    medkit_heal: float
+    dna_value: int
+    weapon_xp: int
+    medkits: int
+    magnets: int
+    dna: int
+
+
+@dataclass(frozen=True)
+class BiomeCfg:
+    name: str
+    ground: Color
+    ground_alt: Color
+    tree: str
+    tree_color: Color
+    tree_hp: int
+    forest: float
+    forest_scale: float
+    buildings: int
+    rivers: int
+    quicksand: int
+    mud: float
+
+
+@dataclass(frozen=True)
 class Balance:
     player: PlayerCfg
     enemies: dict[str, EnemyCfg]
@@ -212,6 +261,9 @@ class Balance:
     mix: tuple[MixCfg, ...]
     xp: XpCfg
     rarities: tuple[Rarity, ...]
+    map: MapCfg
+    items: ItemsCfg
+    biomes: dict[str, BiomeCfg]
     upgrades: tuple[Upgrade, ...] = field(default=())
 
     @classmethod
@@ -222,8 +274,10 @@ class Balance:
             with open(folder / name, "rb") as f:
                 return tomllib.load(f)
 
-        player, enemies, weapons, session, upgrades = (
-            read(n) for n in ("player.toml", "enemies.toml", "weapons.toml", "session.toml", "upgrades.toml"))
+        player, enemies, weapons, session, upgrades, biomes = (
+            read(n) for n in ("player.toml", "enemies.toml", "weapons.toml", "session.toml", "upgrades.toml",
+                              "biomes.toml"))
+        map_cfg, items = biomes.pop("map"), biomes.pop("items")
         scaling = enemies.pop("scaling")
         orbital = weapons.pop("orbital")
         balance = cls(
@@ -241,6 +295,9 @@ class Balance:
             mix=tuple(_build(MixCfg, m) for m in session["mix"]),
             xp=_build(XpCfg, session["xp"]),
             rarities=tuple(_build(Rarity, r) for r in session["rarity"]),
+            map=_build(MapCfg, map_cfg),
+            items=_build(ItemsCfg, items),
+            biomes={k: _build(BiomeCfg, v) for k, v in biomes.items()},
             upgrades=tuple(_build(Upgrade, u) for u in upgrades["upgrade"]),
         )
         balance.validate()
@@ -271,6 +328,9 @@ class Balance:
         for m in self.mix:
             if m.kind not in self.enemies or m.kind in ("worker", "semi_boss", "queen"):
                 raise ValueError(f"session.toml: [[mix]] — неверный вид {m.kind}")
+        for biome in BIOME_IDS:
+            if biome not in self.biomes:
+                raise ValueError(f"biomes.toml: нет биома {biome}")
         if not self.rarities or self.rarities[0].bonus <= 0:
             raise ValueError("session.toml: первая редкость должна давать бонус > 0")
 
@@ -278,3 +338,4 @@ class Balance:
 # Порядок важен: индекс вида — его номер в массивах толпы, боссы — последними
 ENEMY_KINDS = ("worker", "warrior", "spitter", "flyer", "tanker", "brain", "semi_boss", "queen")
 WEAPON_IDS = ("mar", "shotgun", "sniper", "flame", "rocket", "turret", "shock")
+BIOME_IDS = ("desert", "forest", "jungle", "swamp")  # порядок прохождения

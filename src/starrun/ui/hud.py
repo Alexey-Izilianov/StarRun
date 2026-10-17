@@ -42,6 +42,7 @@ MULTIPLIER = {"damage_mult", "range_mult", "reload_mult", "ammo_mult", "orbital_
               "sprint_mult"}
 KIND_NAMES = {"worker": "Рабочие", "warrior": "Воины", "spitter": "Стрелки", "flyer": "Летающие",
               "tanker": "Танкеры", "brain": "Мозговые", "semi_boss": "Полубоссы", "queen": "Королева"}
+HAZARD_NAMES = {"acid": "кислота", "cactus": "кактусы", "sand": "зыбучий песок"}  # урон не от укусов
 SHORT = {"rocket": "Ракетница", "sniper": "Снайперка", "turret": "Турель"}  # в слот длинное имя не влезает
 MOD_COLOR = (240, 200, 60, 255)
 
@@ -181,6 +182,8 @@ class Hud:
 
         self.s.rect(vw - 360, H - 140, vw - 16, H - 60, PANEL)
         t.draw("kills", f"Убито  {sum(world.kills.values())}", vw - 32, H - 92, 17, anchor_x="right", bold=True)
+        if world.terrain is not None:
+            t.draw("dna", f"ДНК  {world.dna}", vw - 344, H - 92, 17, QUIET)
         t.draw("hint", "Tab — статистика · Esc — пауза", vw - 32, H - 122, 13, QUIET, anchor_x="right")
 
         self._slots(world, vw)
@@ -330,13 +333,13 @@ class Hud:
         x, x_end = l + 480, l + 880
         y = top - 110
         s = world.session
-        rows = [("Время", clock(s.elapsed)), ("Уровень", str(world.progress.level)),
+        rows = [("Время", clock(s.elapsed)), ("Уровень", str(world.progress.level)), ("Образцы ДНК", str(world.dna)),
                 ("Нанесено урона", f"{world.damage_dealt:,.0f}".replace(",", " ")),
                 ("Получено урона", f"{world.damage_taken:,.0f}".replace(",", " "))]
         rows += [(KIND_NAMES[k], str(world.kills[k])) for k in KINDS if world.kills[k]]
         if world.damage_taken:
             worst, amount = max(world.damage_by.items(), key=lambda kv: kv[1])
-            who = "кислота" if worst == "acid" else KIND_NAMES[worst].lower()
+            who = HAZARD_NAMES.get(worst) or KIND_NAMES[worst].lower()
             rows.append(("Больше всего ранили", f"{who}, {amount / world.damage_taken:.0%}".replace("%", " %")))
         for i, (label, value) in enumerate(rows):
             t.draw(f"sr{i}l", label, x, y, 16, QUIET)

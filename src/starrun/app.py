@@ -1,6 +1,6 @@
 """Окно игры: камеры, ввод, переключение между игрой, паузой, статистикой и выбором улучшения.
 
-Запуск: python -m starrun [--windowed] [--seed N]
+Запуск: python -m starrun [--windowed] [--seed N] [--biome desert|forest|jungle|swamp|plain]
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import arcade
 import numpy as np
 from arcade.types import LRBT
 
-from starrun.balance import Balance
+from starrun.balance import BIOME_IDS, Balance
 from starrun.sim.world import Controls, World
 from starrun.ui.hud import H, Hud
 from starrun.ui.render import Shapes
@@ -35,12 +35,12 @@ class Mode(Enum):
 
 
 class Game(arcade.Window):
-    def __init__(self, windowed: bool, seed: int | None) -> None:
+    def __init__(self, windowed: bool, seed: int | None, biome: str = BIOME_IDS[0]) -> None:
         super().__init__(1600, 900, "StarRun", fullscreen=not windowed, resizable=True, vsync=True,
                          update_rate=1 / 120, draw_rate=1 / 120)
-        self.background_color = GROUND
         self.balance = Balance.load()
         self.seed = seed
+        self.biome = biome
         self.shapes = Shapes(self.ctx)
         self.world_cam = arcade.Camera2D()
         self.ui_cam = arcade.Camera2D()
@@ -56,11 +56,21 @@ class Game(arcade.Window):
 
     # ---------- забег ----------
     def new_run(self) -> None:
-        self.world = World(self.balance, self.seed)
+        """Забег заново в том же биоме (пауза → «Начать заново»)."""
+        biome = None if self.biome == "plain" else self.biome
+        self.world = World(self.balance, self.seed, biome)
         self.scene = SceneRenderer(self.shapes)
         self.hud = Hud(self.shapes)
         self.mode = Mode.PLAY
-        self.hud.notify("Высадка. Продержись до эвакуации")
+        self.background_color = self.balance.biomes[biome].ground if biome else GROUND
+        name = self.balance.biomes[biome].name if biome else "Полигон"
+        self.hud.notify(f"{name}. Высадка: продержись до эвакуации")
+
+    def next_run(self) -> None:
+        """После конца забега — следующий биом по кругу."""
+        if self.biome in BIOME_IDS:
+            self.biome = BIOME_IDS[(BIOME_IDS.index(self.biome) + 1) % len(BIOME_IDS)]
+        self.new_run()
 
     def _fit_cameras(self) -> None:
         """Мир всегда виден в масштабе 1080 по высоте; ширина — по пропорциям окна."""
@@ -97,7 +107,7 @@ class Game(arcade.Window):
             self.set_fullscreen(not self.fullscreen)
         elif w.session.over:
             if symbol in (arcade.key.ENTER, arcade.key.SPACE):
-                self.new_run()
+                self.next_run()
         elif w.awaiting_choice:
             if symbol in CHOICE_KEYS and CHOICE_KEYS[symbol] < len(w.offer()):
                 self.choose(CHOICE_KEYS[symbol])
@@ -150,14 +160,22 @@ class Game(arcade.Window):
         self.world_cam.position = (float(w.player.pos[0] + jitter[0]), float(w.player.pos[1] + jitter[1]))
 
     def _react(self, events: list[str]) -> None:
+        heal = round(self.balance.items.medkit_heal * 100)
         messages = {
             "semi_boss": "Полубосс на подходе",
             "queen": "Тревога 100 %: выходит королева",
             "evac": "Королева убита. Челнок идёт — держись в зоне",
-            "orbital_not_ready": "",
+            "medkit": f"Аптечка: +{heal} % здоровья",
+            "magnet": "Магнит: весь опыт летит к тебе",
+            "dna": f"Образец ДНК — собрано {self.world.dna}",
+            "underbarrel": "Найден подствольный гранатомёт для MAR",
+            "crate_xp": f"Ящик с оружием: слоты заняты, +{self.balance.items.weapon_xp} опыта",
+            "door_broken": "Жуки выломали дверь",
         }
         for e in events:
-            if messages.get(e):
+            if e.startswith("crate:"):
+                self.hud.notify(f"Ящик с оружием: {self.balance.weapons[e[6:]].name}")
+            elif messages.get(e):
                 self.hud.notify(messages[e])
             if e == "player_hit":
                 self.shake = max(self.shake, 4.0)
@@ -178,7 +196,7 @@ class Game(arcade.Window):
         with self.ui_cam.activate():
             self.hud.draw(w, self.vw, self.world_to_ui)
             if w.session.over:
-                self.hud.end(w, self.vw, self.new_run, self.close)
+                self.hud.end(w, self.vw, self.next_run, self.close)
             elif w.awaiting_choice:
                 self.hud.level_up(w, self.vw, self.choose)
             elif self.mode is Mode.PAUSE:
@@ -196,8 +214,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="StarRun")
     parser.add_argument("--windowed", action="store_true", help="в окне, а не на весь экран")
     parser.add_argument("--seed", type=int, default=None, help="зерно случайности — повторить забег")
+    parser.add_argument("--biome", default=BIOME_IDS[0], choices=(*BIOME_IDS, "plain"),
+                        help="с какого биома начать (дальше — по кругу); plain — ровная земля без карты")
     args = parser.parse_args()
-    Game(args.windowed, args.seed)
+    Game(args.windowed, args.seed, args.biome)
     arcade.run()
 
 

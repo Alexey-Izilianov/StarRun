@@ -220,23 +220,37 @@ def test_no_new_weapons_with_full_slots(balance: Balance) -> None:
     assert not [c for c in cards if c.mode == "weapon"]
 
 
-def test_weapon_levels_up_to_five_then_offers_mod(balance: Balance) -> None:
-    w = World(balance, seed=2)
-    mar = w.weapons[0]
-    damage = next(u for u in balance.upgrades if u.id == "mar_damage")
+def level_to_five(w: World, wid: str) -> Weapon:
     from starrun.sim.progression import Offer
+    weapon = next(x for x in w.weapons if x.id == wid)
+    damage = next(u for u in w.balance.upgrades if u.id == f"{wid}_damage")
     for _ in range(4):
         w.progress.pending = 1
-        w._offer = [Offer(damage, balance.rarities[0], 0)]
+        w._offer = [Offer(damage, w.balance.rarities[0], 0)]
         w.choose(0)
-    assert mar.level == 5
+    return weapon
+
+
+def test_weapon_levels_up_to_five_then_offers_mod(balance: Balance) -> None:
+    from starrun.sim.progression import Offer
+    w = World(balance, seed=2)
+    w.weapons.append(make_weapon("shotgun", balance.weapons["shotgun"]))
+    shotgun = level_to_five(w, "shotgun")
+    assert shotgun.level == 5
     cards = w.upgrades.available(w.owned(), free_slot=False)
-    assert "mod:mar" in {c.id for c in cards}
-    assert not [c for c in cards if c.weapon == "mar" and c.mode in ("mult", "add")]
+    assert "mod:shotgun" in {c.id for c in cards}
+    assert not [c for c in cards if c.weapon == "shotgun" and c.mode in ("mult", "add")]
     w.progress.pending = 1
-    w._offer = [Offer(next(c for c in cards if c.id == "mod:mar"), balance.rarities[0], 0)]
+    w._offer = [Offer(next(c for c in cards if c.id == "mod:shotgun"), balance.rarities[0], 0)]
     w.choose(0)
-    assert mar.mod
+    assert shotgun.mod
+    assert "mod:shotgun" not in {c.id for c in w.upgrades.available(w.owned())}
+
+
+def test_underbarrel_is_found_not_offered(balance: Balance) -> None:
+    w = World(balance, seed=2)
+    mar = level_to_five(w, "mar")
+    assert mar.level == 5
     assert "mod:mar" not in {c.id for c in w.upgrades.available(w.owned())}
 
 

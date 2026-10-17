@@ -1,4 +1,4 @@
-"""Мир на простых фигурах: земля, пятна, жуки, десантник, снаряды, пламя, взрывы, метки и зона эвакуации."""
+"""Мир на простых фигурах: карта, пятна, жуки, десантник, снаряды, пламя, взрывы, метки и зона эвакуации."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from starrun.sim.combat import BULLET, GRENADE, PELLET, ROCKET, SNIPER, TURRET_S
 from starrun.sim.swarm import BRAIN, FLYER, QUEEN, SEMI_BOSS, SPITTER, TANKER, WARRIOR
 from starrun.sim.world import World
 from starrun.ui.render import Shapes, rgba
+from starrun.ui.terrain_view import TerrainView, shade
 
 GROUND = (86, 70, 50)
 PEBBLE_DARK = rgba((66, 53, 38), 0.9)
@@ -36,6 +37,10 @@ STUN = rgba((140, 220, 255), 0.9)
 ARC = rgba((150, 220, 255), 0.95)
 ARC_CORE = rgba((240, 250, 255))
 TURRET_BASE = rgba((70, 76, 64))
+AXE = rgba((120, 124, 130))
+AXE_EDGE = rgba((225, 228, 232))
+AXE_HANDLE = rgba((150, 108, 64))
+SAND_RING = (150, 124, 82)
 
 # Снаряды: (размер, цвет, длина хвоста в точках)
 PROJECTILES = {
@@ -90,12 +95,14 @@ def tinted(colors: np.ndarray, mask: np.ndarray, rgb: np.ndarray, amount: np.nda
 class SceneRenderer:
     def __init__(self, shapes: Shapes) -> None:
         self.c = shapes
+        self.map = TerrainView(shapes)
         self.blasts: list[Blast] = []
         self.arcs: list[Arc] = []
         self.time = 0.0
 
     def update(self, dt: float, world: World) -> None:
         self.time += dt
+        self.map.update(dt, world)
         for mark in world.blasts:
             self.blasts.append(Blast(mark.pos.copy(), mark.radius, STRIKE))
         for e in world.booms:
@@ -109,13 +116,21 @@ class SceneRenderer:
         self.arcs = [a for a in self.arcs if a.left > 0]
 
     def draw(self, world: World, view: tuple[float, float, float, float]) -> None:
-        c, p = self.c, world.player
+        c = self.c
         left, bottom, right, top = view
+        self.map.prepare(world, view)
+        self.map.ground(world)
 
         pos, size = pebbles(left - 20, bottom - 20, right + 20, top + 20)
+        keep = self.map.pebble_mask(world, pos)
+        pos, size = pos[keep], size[keep]
         light = size > 9
-        c.add(pos[~light], size[~light], PEBBLE_DARK)
-        c.add(pos[light], size[light], PEBBLE_LIGHT)
+        dark_color, light_color = PEBBLE_DARK, PEBBLE_LIGHT
+        if world.terrain is not None:  # камушки в тон почвы биома
+            dark_color = shade(world.terrain.biome.ground, 0.78, 0.9)
+            light_color = shade(world.terrain.biome.ground_alt, 1.12, 0.8)
+        c.add(pos[~light], size[~light], dark_color)
+        c.add(pos[light], size[light], light_color)
 
         # Пятна крови: клякса из трёх смещённых кругов, к концу жизни выцветают
         d = world.decals
@@ -129,6 +144,7 @@ class SceneRenderer:
                 c.add(d.pos[idx] + offset, d.size[idx] * 2 * scale, color)
 
         self._napalm(world)
+        self.map.objects(world)
 
         if world.evac_pos is not None:
             r = world.balance.evac.radius
@@ -154,17 +170,8 @@ class SceneRenderer:
 
         self._bugs(world, flying=False)
         self._turrets(world)
-
-        # Десантник: тёмный контур, корпус, наплечники, ствол в сторону прицела
-        r = world.stats["radius"]
-        body = HURT if p.hurt > 0 else MARINE
-        c.add_one(*p.pos, r * 2 + 6, OUTLINE)
-        c.add_one(*p.pos, r * 2, body)
-        side = np.array([-p.facing[1], p.facing[0]])
-        for s in (-1, 1):
-            c.add_one(*(p.pos + side * s * r * 0.62), r * 0.8, MARINE_PAD)
-        c.add_one(*(p.pos + p.facing * r * 0.95), 12, OUTLINE)
-        c.add_one(*(p.pos + p.facing * r * 1.45), 8, OUTLINE)
+        self._marine(world)
+        self.map.roofs(world)
 
         self._bugs(world, flying=True)
         self._projectiles(world)
@@ -186,6 +193,41 @@ class SceneRenderer:
         c.flush()
 
     # ---------- слои ----------
+    def _marine(self, world: World) -> None:
+        """Десантник: тёмный контур, корпус, наплечники, ствол в сторону прицела. Перелезая окно или забор —
+        чуть крупнее (в прыжке) с тенью; в зыбучем песке — уходит вниз, вокруг — кольцо песка;
+        у дерева — топор описывает дугу по ходу движения."""
+        c, p = self.c, world.player
+        r = world.stats["radius"]
+        scale = 1.0
+        if p.vaulting:
+            scale = 1.15
+            c.add_one(*(p.pos + [6, -10]), r * 2, SHADOW)
+        if p.sink > 0:
+            scale *= 1 - 0.3 * p.sink
+            c.add_one(*p.pos, r * 2.6, rgba(SAND_RING, 0.4 + 0.5 * p.sink), ring=0.3)
+        rs = r * scale
+        body = HURT if p.hurt > 0 else MARINE
+        c.add_one(*p.pos, rs * 2 + 6, OUTLINE)
+        c.add_one(*p.pos, rs * 2, body)
+        side = np.array([-p.facing[1], p.facing[0]])
+        for s in (-1, 1):
+            c.add_one(*(p.pos + side * s * rs * 0.62), rs * 0.8, MARINE_PAD)
+        c.add_one(*(p.pos + p.facing * rs * 0.95), 12, OUTLINE)
+        c.add_one(*(p.pos + p.facing * rs * 1.45), 8, OUTLINE)
+        if p.chop >= 0:
+            # Замах от плеча через фронт: -80° → +30° от направления хода, удар — в конце дуги
+            base = np.arctan2(p.heading[1], p.heading[0])
+            a = base + np.radians(-80 + 110 * p.chop ** 2)
+            d = np.array([np.cos(a), np.sin(a)], np.float32)
+            for k in np.linspace(0.0, 1.0, 5):  # рукоять
+                c.add_one(*(p.pos + d * rs * (0.6 + 0.9 * k)), 9, OUTLINE)
+                c.add_one(*(p.pos + d * rs * (0.6 + 0.9 * k)), 6, AXE_HANDLE)
+            head = p.pos + d * rs * 1.65
+            c.add_one(*head, 22, OUTLINE)
+            c.add_one(*head, 18, AXE)
+            c.add_one(*(head + d * 6), 9, AXE_EDGE)
+
     def _napalm(self, world: World) -> None:
         f = world.fires
         idx = np.flatnonzero(f.alive)

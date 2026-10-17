@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from starrun.balance import ENEMY_KINDS, EnemyCfg
+from starrun.sim.terrain import FENCE, TREE, Terrain
 
 KINDS = ENEMY_KINDS
 WORKER, WARRIOR, SPITTER, FLYER, TANKER, BRAIN, SEMI_BOSS, QUEEN = range(len(KINDS))
@@ -19,6 +20,8 @@ CELL = 32.0          # клетка сетки плотности ≈ диаме
 GRID_W, GRID_H = 100, 70  # 3200×2240 px вокруг игрока — экран с запасом
 SEPARATION = 90.0    # сила расталкивания
 FLYER_PUSH = 0.3     # летающих толпа почти не толкает — они над ней
+FLOW_NEAR = 90.0     # ближе этого к десантнику — напрямую, без поля путей
+FLOW_BLEND = 0.25    # доля прямого направления в шаге по полю путей: движение плавнее клеточного
 HIT_FLASH = 0.1
 
 
@@ -30,6 +33,7 @@ class SwarmStep:
     volleys: list[np.ndarray] = field(default_factory=list)                  # откуда королева плюёт
     spits: list[tuple[np.ndarray, np.ndarray, float]] = field(default_factory=list)  # стрелки: откуда, куда, урон
     swings: int = 0                                                          # завершённых замахов воинов
+    doors: int = 0                                                           # выломано дверей
 
 
 class Swarm:
@@ -129,10 +133,13 @@ class Swarm:
         self.stun[idx] = np.maximum(self.stun[idx], seconds)
         self.windup[idx] = -1
 
-    def knock(self, idx: np.ndarray, push: np.ndarray) -> None:
-        """Отбрасывание: сдвиг сразу, без инерции. Танкер и боссы стоят."""
+    def knock(self, idx: np.ndarray, push: np.ndarray, terrain: Terrain | None = None) -> None:
+        """Отбрасывание: сдвиг сразу, без инерции. Танкер и боссы стоят; в стену и лес не отбросить."""
         idx = np.asarray(idx)
         movable = ~self.immune[idx]
+        if terrain is not None:
+            dest = self.pos[idx] + push
+            movable &= ~terrain.bug_blocked(dest) | (self.kind[idx] == FLYER)
         self.pos[idx[movable]] += push[movable]
 
     def collect_dead(self) -> np.ndarray:
@@ -210,7 +217,7 @@ class Swarm:
             self.buffed[idx[inside]] = True
         return boost
 
-    def step(self, dt: float, player: np.ndarray, player_radius: float) -> SwarmStep:
+    def step(self, dt: float, player: np.ndarray, player_radius: float, terrain: Terrain | None = None) -> SwarmStep:
         out = SwarmStep()
         self.time += dt
         idx = self.alive_idx
@@ -227,7 +234,16 @@ class Swarm:
 
         speed = self.speed[idx] * boost
         speed[(self.windup[idx] >= 0) | stunned] = 0  # в замахе и оглушённый — стоит
-        heading = direction.copy()
+        walkers = kind != FLYER
+        path = direction.copy()  # куда идти: к десантнику, а на карте — в обход препятствий по полю путей
+        if terrain is not None:
+            speed[walkers] *= terrain.bug_speed(pos[walkers])
+            flow, ok = terrain.flow(pos)
+            use = ok & walkers & (dist > FLOW_NEAR)
+            if use.any():
+                v = flow[use] * (1 - FLOW_BLEND) + direction[use] * FLOW_BLEND
+                path[use] = v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-6)
+        heading = path.copy()
 
         # Стрелок и мозговой держат дистанцию: ближе — пятятся, в своей полосе — ходят боком
         keep = self.keep[idx]
@@ -237,7 +253,9 @@ class Swarm:
             too_far = dist > keep * 1.1
             radial = np.where(too_close, -1.0, np.where(too_far, 1.0, 0.0))
             strafe = np.where(too_close | too_far, 0.0, 0.6) * np.where(idx % 2, 1.0, -1.0)
-            heading[holds] = (direction * radial[:, None] + side * strafe[:, None])[holds]
+            # подходят в обход препятствий, пятятся напрямую
+            toward = np.where((radial > 0)[:, None], path, direction * radial[:, None])
+            heading[holds] = (toward + side * strafe[:, None])[holds]
 
         # Летающие петляют — по ним труднее попасть
         flyers = kind == FLYER
@@ -254,14 +272,20 @@ class Swarm:
         push[kind == QUEEN] = 0
         push[flyers] *= FLYER_PUSH
         pos = pos + (move + push) * dt
+        if terrain is not None:
+            out.doors = self._collide(terrain, idx, kind, pos, dt)
 
-        # Жуки не наползают на десантника: выталкиваются на край его круга
+        # Жуки не наползают на десантника: выталкиваются на край его круга — но не в дерево или стену
         reach = self.radius[idx] + player_radius
         to = player - pos
         dist = np.linalg.norm(to, axis=1) + 1e-3
         inside = dist < reach
-        pos[inside] = player - to[inside] / dist[inside, None] * reach[inside, None]
-        dist[inside] = reach[inside]
+        pushed = player - to[inside] / dist[inside, None] * reach[inside, None]
+        if terrain is not None:
+            into_wall = terrain.bug_blocked(pushed) & ~terrain.bug_blocked(pos[inside]) & walkers[inside]
+            pushed[into_wall] = pos[inside][into_wall]
+        pos[inside] = pushed
+        dist[inside] = np.linalg.norm(player - pos[inside], axis=1) + 1e-3
         self.pos[idx] = pos
 
         for arr in (self.cooldown, self.flash, self.dash, self.stun):
@@ -280,6 +304,28 @@ class Swarm:
         self._windups(out, dt, idx, kind, pos, direction, dist, damage, ready, player_radius)
         self._bosses(out, dt, idx, kind, direction)
         return out
+
+    def _collide(self, terrain: Terrain, idx: np.ndarray, kind: np.ndarray, pos: np.ndarray, dt: float) -> int:
+        """Наземные жуки не проходят сквозь лес, стены, воду и заборы: скользят вдоль, иначе стоят.
+        Танкер проламывает лес и заборы, боссы — всё такое под своим телом; упёршиеся в дверь выламывают её.
+        Меняет pos на месте."""
+        old = self.pos[idx]
+        tanks = kind == TANKER
+        if tanks.any():
+            terrain.smash(pos[tanks])
+        for i in np.flatnonzero(kind >= SEMI_BOSS):
+            terrain.clear_circle_px(pos[i], float(self.radius[idx[i]]), (TREE, FENCE))
+        b = np.flatnonzero((kind != FLYER) & terrain.bug_blocked(pos))
+        b = b[~terrain.bug_blocked(old[b])]  # уже стоявший в преграде (дверь закрылась) — выходит свободно
+        if not len(b):
+            return 0
+        attempt = pos[b].copy()
+        try_x = np.stack([pos[b, 0], old[b, 1]], 1)
+        try_y = np.stack([old[b, 0], pos[b, 1]], 1)
+        ok_x = ~terrain.bug_blocked(try_x)
+        ok_y = ~terrain.bug_blocked(try_y)
+        pos[b] = np.where(ok_x[:, None], try_x, np.where(ok_y[:, None], try_y, old[b]))
+        return terrain.press_doors(attempt, dt)
 
     def _windups(self, out: SwarmStep, dt: float, idx: np.ndarray, kind: np.ndarray, pos: np.ndarray,
                  direction: np.ndarray, dist: np.ndarray, damage: np.ndarray, ready: np.ndarray,

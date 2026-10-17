@@ -4,7 +4,7 @@
 плотному скоплению и берёт улучшения по простому приоритету. Это не замена живому игроку,
 а грубый замер: на какой минуте умирает «средний» игрок, сколько уровней набирает, доходит ли до эвакуации.
 
-Запуск: .venv/Scripts/python tools/balance_bot.py [--runs 5] [--minutes 22]
+Запуск: .venv/Scripts/python tools/balance_bot.py [--runs 5] [--minutes 22] [--biome all|plain|desert|...]
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ import time
 
 import numpy as np
 
-from starrun.balance import Balance
+from starrun.balance import BIOME_IDS, Balance
 from starrun.sim.session import Phase
+from starrun.sim.terrain import PLAYER_BLOCK
 from starrun.sim.world import Controls, World
 
 DT = 1 / 30
@@ -26,9 +27,32 @@ SEE = 420.0        # от кого вообще уклоняться
 PRIORITY = ("mod:", "_damage", "damage", "_rate", "max_hp", "new:", "regen", "speed", "pickup", "reload")
 CLOSE = ("flame", "shotgun", "shock")        # чем отбиваться, когда жуки рядом
 FAR = ("rocket", "mar", "shock", "sniper", "turret")  # турель сама не стреляет — в последнюю очередь
+TURNS = np.radians([0, 25, -25, 50, -50, 75, -75])  # отвороты от леса; больше — обратно в толпу
+LOOK = np.linspace(30, 200, 9)  # точки луча «просвета» впереди, пикселей
+OPEN_ENOUGH = 100.0            # такого просвета хватает, чтобы не искать курс лучше
 
 
 def steer(w: World) -> tuple[float, float]:
+    return around_trees(w, desired(w))
+
+
+def around_trees(w: World, v: tuple[float, float]) -> tuple[float, float]:
+    """Живой игрок обходит лес и не лезет в тупики: из курсов, близких к желаемому, — первый с просветом
+    не короче OPEN_ENOUGH, иначе самый просторный. Рубит, только если упёрся со всех сторон."""
+    t = w.terrain
+    if t is None or v == (0.0, 0.0):
+        return v
+    angles = np.arctan2(v[1], v[0]) + TURNS
+    dirs = np.stack([np.cos(angles), np.sin(angles)], 1).astype(np.float32)
+    pts = w.player.pos + dirs[:, None, :] * LOOK[None, :, None]
+    blocked = PLAYER_BLOCK[t.kinds_at(pts.reshape(-1, 2))].reshape(len(TURNS), len(LOOK))
+    clear = np.where(blocked.any(1), LOOK[blocked.argmax(1)], LOOK[-1] + 1)
+    good = np.flatnonzero(clear >= OPEN_ENOUGH)
+    best = good[0] if len(good) else int(np.argmax(clear))
+    return (float(dirs[best, 0]), float(dirs[best, 1]))
+
+
+def desired(w: World) -> tuple[float, float]:
     sw, pos = w.swarm, w.player.pos
     idx = sw.alive_idx
     rel = sw.pos[idx] - pos
@@ -131,15 +155,16 @@ def weapon_slot(w: World) -> int | None:
     return candidates[0] if candidates else levels.index(best)
 
 
-def run(balance: Balance, seed: int, minutes: float) -> dict[str, float | str]:
-    w = World(balance, seed)
+def run(balance: Balance, seed: int, minutes: float, biome: str | None) -> dict[str, float | str]:
+    w = World(balance, seed, biome)
     while not w.session.over and w.session.elapsed < minutes * 60:
         if w.awaiting_choice:
             w.choose(pick(w))
             continue
         w.step(DT, Controls(move=steer(w), sprint=in_danger(w), ability_target=strike_target(w),
                             select=weapon_slot(w)))
-    return {"result": w.session.phase.name, "minute": w.session.elapsed / 60, "level": w.progress.level,
+    return {"result": w.session.phase.name, "biome": biome or "plain", "minute": w.session.elapsed / 60,
+            "level": w.progress.level,
             "kills": sum(w.kills.values()), "queen": w.session.phase in (Phase.EVAC, Phase.VICTORY),
             "weapons": " ".join(f"{x.id}{x.level}{'*' if x.mod else ''}" for x in w.weapons)}
 
@@ -148,16 +173,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--minutes", type=float, default=22)
+    parser.add_argument("--biome", default="all", choices=("all", "plain", *BIOME_IDS),
+                        help="all — биомы по кругу, plain — ровная земля без карты")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # консоль Windows — cp1251
     balance = Balance.load()
     results = []
     for seed in range(args.runs):
         t = time.perf_counter()
-        r = run(balance, seed, args.minutes)
+        biome = BIOME_IDS[seed % len(BIOME_IDS)] if args.biome == "all" else args.biome
+        r = run(balance, seed, args.minutes, None if biome == "plain" else biome)
         results.append(r)
-        print(f"seed {seed}: {r['result']:8s} мин {r['minute']:5.1f}  уровень {r['level']:2d}  убито {r['kills']:5d}"
-              f"  оружие {r['weapons']}  ({time.perf_counter() - t:.0f} с)", flush=True)
+        print(f"seed {seed} {r['biome']:7s}: {r['result']:8s} мин {r['minute']:5.1f}  уровень {r['level']:2d}"
+              f"  убито {r['kills']:5d}  оружие {r['weapons']}  ({time.perf_counter() - t:.0f} с)", flush=True)
     minutes = [float(r["minute"]) for r in results]
     wins = sum(r["result"] == "VICTORY" for r in results)
     print(f"итого: побед {wins}/{len(results)}, средняя минута конца {statistics.fmean(minutes):.1f}, "

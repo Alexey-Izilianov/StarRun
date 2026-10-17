@@ -9,8 +9,10 @@ import numpy as np
 from starrun.balance import OrbitalCfg
 from starrun.sim.progression import Stats
 from starrun.sim.swarm import Swarm
+from starrun.sim.terrain import Terrain
 
 BULLET_RADIUS = 4.0
+WALL_SAMPLES = np.array([0.25, 0.5, 0.75, 1.0], np.float32)
 
 # Вид снаряда — для отрисовки
 BULLET, PELLET, SNIPER, ROCKET, GRENADE, TURRET_SHOT = range(6)
@@ -82,9 +84,10 @@ class Bullets:
                                             float(self.cluster_damage[i]), float(self.cluster_radius[i])))
         self.alive[b] = False
 
-    def step(self, dt: float, swarm: Swarm) -> Impacts:
+    def step(self, dt: float, swarm: Swarm, terrain: Terrain | None = None) -> Impacts:
         """Полёт и попадания. Пуля за кадр бьёт одного — ближайшего; снаряд со взрывом рвётся при касании
-        или в конце полёта (ракета долетает до точки цели)."""
+        или в конце полёта (ракета долетает до точки цели). На карте лес, стены и закрытые двери
+        останавливают снаряды (взрывные рвутся о них)."""
         out = Impacts()
         start = self.pos.copy()
         self.pos += self.vel * dt
@@ -93,20 +96,30 @@ class Bullets:
         self._explode(np.flatnonzero(expired & (self.blast > 0)), out)
         self.alive &= self.life > 0
         b = np.flatnonzero(self.alive)
-        bugs = swarm.alive_idx
-        if not len(b) or not len(bugs):
+        if not len(b):
             return out
-        # Пуль в полёте десятки — попарная проверка с жуками дешевле любой структуры.
-        # Проверяется отрезок полёта за кадр, а не точка: снайперская пуля проходит 40+ px за кадр
-        # и иначе проскочила бы жука насквозь.
-        p0 = start[b][:, None, :]
-        seg = (self.pos[b] - start[b])[:, None, :]
-        rel = swarm.pos[bugs][None, :, :] - p0
-        t = np.clip((rel * seg).sum(-1) / ((seg**2).sum(-1) + 1e-9), 0, 1)
-        d2 = ((rel - seg * t[..., None]) ** 2).sum(-1)
-        hit = d2 < (swarm.radius[bugs][None, :] + BULLET_RADIUS) ** 2
-        hit &= bugs[None, :] != self.last_hit[b][:, None]
-        any_hit = hit.any(1)
+        wall = wall_t(terrain, start[b], self.pos[b])
+        bugs = swarm.alive_idx
+        any_hit = np.zeros(len(b), bool)
+        if len(bugs):
+            # Пуль в полёте десятки — попарная проверка с жуками дешевле любой структуры.
+            # Проверяется отрезок полёта за кадр, а не точка: снайперская пуля проходит 40+ px за кадр
+            # и иначе проскочила бы жука насквозь.
+            p0 = start[b][:, None, :]
+            seg = (self.pos[b] - start[b])[:, None, :]
+            rel = swarm.pos[bugs][None, :, :] - p0
+            t = np.clip((rel * seg).sum(-1) / ((seg**2).sum(-1) + 1e-9), 0, 1)
+            d2 = ((rel - seg * t[..., None]) ** 2).sum(-1)
+            hit = d2 < (swarm.radius[bugs][None, :] + BULLET_RADIUS) ** 2
+            hit &= bugs[None, :] != self.last_hit[b][:, None]
+            hit &= t < wall[:, None]  # жук за деревом не задет
+            any_hit = hit.any(1)
+        # В стену — без попадания в жука: снаряд гаснет там, взрывной рвётся
+        stopped = ~any_hit & np.isfinite(wall)
+        sb = b[stopped]
+        self.pos[sb] = start[sb] + (self.pos[sb] - start[sb]) * wall[stopped, None]
+        self._explode(sb[self.blast[sb] > 0], out)
+        self.alive[sb] = False
         if not any_hit.any():
             return out
         first = np.argmin(np.where(hit, t, np.inf), 1)  # первый на пути, а не ближайший к концу отрезка
@@ -149,15 +162,34 @@ class Acid:
         self.damage[free] = damage
         self.alive[free] = True
 
-    def step(self, dt: float, player: np.ndarray, player_radius: float) -> list[float]:
+    def step(self, dt: float, player: np.ndarray, player_radius: float, terrain: Terrain | None = None) -> list[float]:
+        start = self.pos.copy()
         self.pos += self.vel * dt
         self.life -= dt
         self.alive &= self.life > 0
+        if terrain is not None:  # кислота разбивается о лес и стены
+            live = np.flatnonzero(self.alive)
+            self.alive[live] = ~np.isfinite(wall_t(terrain, start[live], self.pos[live]))
         idx = np.flatnonzero(self.alive)
         d2 = ((self.pos[idx] - player) ** 2).sum(1)
         hit = idx[d2 < (player_radius + self.RADIUS) ** 2]
         self.alive[hit] = False
         return self.damage[hit].tolist()
+
+
+def wall_t(terrain: Terrain | None, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Доля отрезка полёта до первой преграды для выстрела (inf — путь свободен). Отрезок проверяется
+    точками через четверть: за кадр снаряд пролетает меньше двух клеток."""
+    n = len(start)
+    if terrain is None or not n:
+        return np.full(n, np.inf, np.float32)
+    seg = end - start
+    pts = start[:, None, :] + seg[:, None, :] * WALL_SAMPLES[None, :, None]
+    blocked = terrain.shot_blocked(pts.reshape(-1, 2)).reshape(n, len(WALL_SAMPLES))
+    first = blocked.argmax(1)
+    # Преграда — между предыдущей свободной точкой и первой занятой: берётся середина
+    t = WALL_SAMPLES[first] - 0.125
+    return np.where(blocked.any(1), np.maximum(t, 0.0), np.inf).astype(np.float32)
 
 
 def fan(direction: np.ndarray, count: int, spread_deg: float) -> np.ndarray:

@@ -1,0 +1,86 @@
+# Карта и биомы. Карта — сетка клеток cell × cell пикселей; size — клеток по стороне.
+# Лес — поле шума: клетка становится деревом, где шум выше порога (доля forest от площади).
+
+[map]
+size = 200                  # 200 × 40 px = 8000 px по стороне
+cell = 40
+border = 3                  # скалы по краю, клеток
+start_clear = 9             # поляна высадки, радиус в клетках
+flow_radius = [36, 24]      # окно поля путей вокруг десантника, клеток по x и y
+flow_every = 0.35           # пересчёт поля путей, секунд
+chop_every = 0.4            # удар топором
+door_hp = 4.0               # секунд напора жука, чтобы выломать дверь
+window_bug_speed = 0.33     # жуки лезут в окно втрое медленнее
+vault_speed = 0.4           # десантник в окне и на заборе
+mud_speed = 0.6             # топь замедляет всех наземных
+sand_bug_speed = 0.5
+sand_sink_rate = 0.5        # погружение в зыбучий песок за секунду (0..1)
+sand_recover = 1.0
+sand_damage = 10            # урон в секунду при полном погружении
+cactus_damage = 4           # за касание кактуса, раз в cactus_every
+cactus_every = 0.5
+evac_clear = 6              # вокруг зоны эвакуации лес вырубается, радиус в клетках
+
+[items]
+medkit_heal = 0.4           # доля здоровья
+dna_value = 1
+weapon_xp = 30              # ящик с оружием при полных слотах — опыт
+medkits = 8
+magnets = 3
+dna = 10
+
+[desert]
+name = "Пустыня"
+ground = [86, 70, 50]
+ground_alt = [104, 86, 60]  # пятна почвы
+tree = "cactus"
+tree_color = [72, 112, 58]
+tree_hp = 2                 # ударов топором
+forest = 0.10
+forest_scale = 7            # крупность пятен леса, клеток
+buildings = 6
+rivers = 0
+quicksand = 10              # пятен зыбучего песка
+mud = 0.0
+
+[forest]
+name = "Густой лес"
+ground = [58, 66, 44]
+ground_alt = [70, 78, 50]
+tree = "pine"
+tree_color = [34, 70, 44]
+tree_hp = 4
+forest = 0.42
+forest_scale = 9
+buildings = 4
+rivers = 0
+quicksand = 0
+mud = 0.0
+
+[jungle]
+name = "Джунгли"
+ground = [62, 72, 40]
+ground_alt = [76, 88, 46]
+tree = "palm"
+tree_color = [52, 112, 48]
+tree_hp = 3
+forest = 0.34
+forest_scale = 8
+buildings = 4
+rivers = 2
+quicksand = 0
+mud = 0.0
+
+[swamp]
+name = "Болото"
+ground = [60, 62, 48]
+ground_alt = [48, 56, 46]
+tree = "swamp"
+tree_color = [70, 82, 52]
+tree_hp = 3
+forest = 0.26
+forest_scale = 8
+buildings = 5
+rivers = 0
+quicksand = 0
+mud = 0.3                   # доля карты под топью

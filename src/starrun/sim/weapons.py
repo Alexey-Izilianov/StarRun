@@ -20,6 +20,7 @@ MAX_LEVEL = 5
 NAPALM_EVERY = 0.5      # огнемёт с напалмом оставляет лужу раз в полсекунды
 RAIL_PIERCE = 99        # «рельса» пробивает всех на линии
 RAIL_SPEED = 1.5
+FLAME_TREE_DAMAGE = 0.08  # «удара топором» за тик огнемёта: ель (4 удара) сгорает за ~4 с
 
 
 def unit(v: np.ndarray) -> np.ndarray:
@@ -155,7 +156,7 @@ class Shotgun(Weapon):
 
 class Sniper(Weapon):
     def aim(self, world: World) -> np.ndarray | None:
-        i = world.swarm.toughest(world.player.pos, self.reach(world))
+        i = world.toughest_bug(world.player.pos, self.reach(world))
         return None if i is None else world.swarm.pos[i].copy()
 
     def fire(self, world: World, target: np.ndarray, shots: int) -> None:
@@ -182,6 +183,8 @@ class Flame(Weapon):
         d = unit(target - p)
         reach = self.reach(world)
         caught = world.swarm.in_cone(p, d, reach, c.cone_deg)
+        caught = caught[world.in_sight(p, world.swarm.pos[caught])]  # за деревом огонь не достаёт
+        world.burn_tree(p, d, reach, FLAME_TREE_DAMAGE * shots)
         if len(caught):
             world.deal(caught, np.full(len(caught), self.damage(world) * shots, np.float32))
             world.swarm.ignite(caught, c.burn_time, c.burn_dps * self.stat(world, "burn") * world.stats["damage_mult"])
@@ -218,7 +221,7 @@ class Turret(Weapon):
     def update(self, dt: float, world: World) -> None:
         self.cooldown -= dt
         c = self.cfg
-        if self.cooldown > 0 or world.swarm.nearest(world.player.pos, self.reach(world)) is None:
+        if self.cooldown > 0 or world.nearest_bug(world.player.pos, self.reach(world)) is None:
             return
         self.cooldown = c.deploy_every
         count = c.mod_count if self.mod else 1
@@ -239,7 +242,7 @@ class Shock(Weapon):
         sw = world.swarm
         links = (c.mod_count if self.mod else c.chain) + int(self.stat(world, "chain"))
         for _ in range(shots):
-            first = sw.nearest(world.player.pos, self.reach(world))
+            first = world.nearest_bug(world.player.pos, self.reach(world))
             if first is None:
                 return
             chain = [first]
@@ -307,7 +310,7 @@ class Turrets:
             self.cooldown[i] -= dt
             if self.cooldown[i] > 0:
                 continue
-            j = world.swarm.nearest(self.pos[i], reach)
+            j = world.nearest_bug(self.pos[i], reach)
             if j is None:
                 self.cooldown[i] = 0
                 continue

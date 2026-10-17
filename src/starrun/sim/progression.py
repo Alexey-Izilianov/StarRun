@@ -116,7 +116,7 @@ class Upgrades:
         for wid, cfg in self.weapons.items():
             if wid not in owned and free_slot:
                 out.append(Upgrade(f"new:{wid}", cfg.name, cfg.text, "", "weapon", "weapon", weapon=wid))
-            elif wid in owned and owned[wid][0] >= MAX_WEAPON_LEVEL and not owned[wid][1]:
+            elif wid in owned and owned[wid][0] >= MAX_WEAPON_LEVEL and not owned[wid][1] and not cfg.mod_found:
                 out.append(Upgrade(f"mod:{wid}", f"{cfg.name}: {cfg.mod_name.lower()}", cfg.mod_text, "", "mod",
                                    "weapon", weapon=wid))
         return out

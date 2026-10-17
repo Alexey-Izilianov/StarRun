@@ -103,6 +103,19 @@ class Shapes:
     def add_one(self, x: float, y: float, size: float, color: np.ndarray, ring: float = 0.0) -> None:
         self.add(np.array([[x, y]], np.float32), size, color, ring)
 
+    def boxes(self, pos: np.ndarray, size: np.ndarray | tuple[float, float], color: np.ndarray) -> None:
+        """Прямоугольники пакетом: pos (n,2) — центры; size — (w, h) на всех или (n,2); color (4,) или (n,4)."""
+        n = len(pos)
+        if not n:
+            return
+        chunk = self._reserve(n)
+        n = len(chunk)
+        chunk[:, 0:2] = pos[:n]
+        chunk[:, 2:4] = size if np.ndim(size) == 1 else np.asarray(size)[:n]
+        chunk[:, 4:8] = color if np.ndim(color) == 1 else np.asarray(color)[:n]
+        chunk[:, 8] = 0.0
+        chunk[:, 9] = 0.0
+
     def rect(self, left: float, bottom: float, right: float, top: float, color: tuple[int, ...]) -> None:
         chunk = self._reserve(1)
         chunk[0] = ((left + right) / 2, (bottom + top) / 2, right - left, top - bottom, *rgba(color), 0.0, 0.0)
