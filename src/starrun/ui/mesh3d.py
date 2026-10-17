@@ -332,6 +332,12 @@ def instances(pos: np.ndarray, yaw: np.ndarray | float = 0.0, z: np.ndarray | fl
 Part = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 
 
+def load_part(path: Path, scale: float) -> Part:
+    """Статичная модель из Blender (tools/art/flora.py): метры → пиксели, цвет вершин уже с затенением."""
+    d = np.load(path)
+    return (d["positions"] * scale, d["normals"], d["colors"], d["indices"])
+
+
 def merge(parts: list[Part]) -> Part:
     pos, nrm, col, idx = [], [], [], []
     base = 0

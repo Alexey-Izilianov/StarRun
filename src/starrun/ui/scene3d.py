@@ -111,7 +111,8 @@ class Scene3D:
         self.receiver = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=M.RECEIVER_FS)
         names = {"marine", "turret"} | {look[0] for look in BUG_LOOK.values()}
         self.models = {n: M.SkinnedModel(ctx, MODELS / f"{n}.npz") for n in sorted(names)}
-        self.trees: dict[tuple[str, tuple[int, int, int]], M.StaticMesh] = {}
+        self.trees: dict[tuple[str, tuple[int, int, int]], list[M.StaticMesh]] = {}
+        self.shadow_lod: dict[M.StaticMesh, M.StaticMesh] = {}   # дерево → упрощённое для карты теней
         wall, glass, door = (0.36, 0.37, 0.39), (0.42, 0.62, 0.7), (0.42, 0.29, 0.18)
         self.props = {
             "wall": M.StaticMesh(ctx, [M.box((40, 40, WALL_H), (0, 0, WALL_H / 2), wall)]),
@@ -200,7 +201,7 @@ class Scene3D:
         rect = cam.ground_rect()
         view = (rect[0] - 80, rect[1] - 80, rect[2] + 80, rect[3] + 120)
         scene.map.prepare(world, view)
-        props = self._props(world, rect)
+        props = self._visible(self._props(world, rect), rect)
         roofs = self._roofs(world, scene.map)
         units = self._units(world)
 
@@ -258,7 +259,7 @@ class Scene3D:
         self._set_common(self.skinned_depth, self.light, None)
         self.static_depth["u_player"] = (1e9, 1e9)          # в тень — всё, растворение только для камеры
         for mesh, inst in props:
-            mesh.draw(self.static_depth, inst)
+            self.shadow_lod.get(mesh, mesh).draw(self.static_depth, inst)
         for name, inst, subs in units:
             if name in ("marine", "turret"):   # жуки — пятнами (_blob_shadows): толпа дорога для карты теней
                 self.models[name].draw(self.skinned_depth, inst, subs, depth=True)
@@ -280,11 +281,29 @@ class Scene3D:
         self.quad_geometry.render(self.receiver)
 
     # ---------- экземпляры ----------
-    def _tree(self, biome) -> M.StaticMesh:  # type: ignore[no-untyped-def]
+    def _tree(self, biome) -> list[M.StaticMesh]:  # type: ignore[no-untyped-def]
+        """Варианты дерева биома: модели из Blender (flora_<вид>_<n>.npz), иначе — процедурное из кода."""
         key = (biome.tree, tuple(biome.tree_color))
         if key not in self.trees:
-            self.trees[key] = M.StaticMesh(self.ctx, tree_mesh(biome.tree, biome.tree_color))
+            files = sorted(MODELS.glob(f"flora_{biome.tree}_*.npz"))
+            simple = M.StaticMesh(self.ctx, tree_mesh(biome.tree, biome.tree_color))
+            self.trees[key] = [M.StaticMesh(self.ctx, [M.load_part(f, PX_PER_M)]) for f in files] or [simple]
+            # в карту теней — процедурное дерево: силуэт тот же, треугольников вчетверо меньше (лес — сотни)
+            self.shadow_lod.update({mesh: simple for mesh in self.trees[key]})
         return self.trees[key]
+
+    @staticmethod
+    def _visible(props: list[tuple[M.StaticMesh, np.ndarray]], rect: tuple[float, float, float, float],
+                 margin: float = 140.0) -> list[tuple[M.StaticMesh, np.ndarray]]:
+        """Окно мешей шире экрана (сдвигается кусками) — рисуем только видимое и полосу под тени к северо-западу."""
+        l, b, r, t = rect  # noqa: E741
+        out = []
+        for mesh, inst in props:
+            x, y = inst[:, 0], inst[:, 1]
+            keep = (x > l - margin) & (x < r + margin) & (y > b - margin) & (y < t + margin * 1.5)
+            if keep.any():
+                out.append((mesh, inst if keep.all() else inst[keep]))
+        return out
 
     def _props(self, world: World, rect: tuple[float, float, float, float]) -> list[tuple[M.StaticMesh, np.ndarray]]:
         """Лес, стены, двери, окна, заборы, скалы в окне вокруг видимой земли. Окно сдвигается кусками по
@@ -325,9 +344,14 @@ class Scene3D:
             spread = 6.0 if t.biome.tree == "cactus" else 30.0     # кроны шире клетки — их можно сдвинуть, кактус нет
             pos = pos + (np.stack([cell_hash(xs, ys, 9), cell_hash(xs, ys, 8)], 1) - 0.5) * spread   # без рядов
             hp = np.clip(t.hp[np.clip(ys, 0, t.n - 1), np.clip(xs, 0, t.n - 1)] / max(1, t.biome.tree_hp), 0, 1)
-            size = 0.9 + 0.2 * h if t.biome.tree == "cactus" else 0.72 + 0.55 * h ** 1.5
+            size = 0.9 + 0.2 * h if t.biome.tree == "cactus" else 0.8 + 0.4 * h ** 1.5   # разнообразие — и вариантами
             s = size * (0.7 + 0.3 * hp)
-            out.append((self._tree(t.biome), M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s], 1))))
+            inst = M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s], 1))
+            variants = self._tree(t.biome)
+            pick = (cell_hash(xs, ys, 5) * len(variants)).astype(int) % len(variants)
+            for v, mesh in enumerate(variants):
+                if (pick == v).any():
+                    out.append((mesh, inst[pick == v]))
         # стены, окна, двери
         for k, name in ((T.WALL, "wall"), (T.WINDOW, "window"), (T.DOOR, "door"), (T.OPEN_DOOR, "door_open")):
             xs, ys, pos = cells(kind == k)
