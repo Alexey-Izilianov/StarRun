@@ -23,6 +23,10 @@ class Settings:
     height: int = 0
     fullscreen: bool = True
     antialiasing: bool = True   # MSAA ×4; применяется после перезапуска (задаётся при создании окна)
+    volume: int = 8             # громкость 0..10: общая и по видам
+    sfx_volume: int = 10
+    voice_volume: int = 10
+    ambient_volume: int = 7
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:

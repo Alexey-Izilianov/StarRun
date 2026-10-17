@@ -190,7 +190,7 @@ class SceneRenderer:
             self._flames(world)
 
         sp = world.splashes
-        if sp.alive.any():
+        if sp.alive.any() and not volumetric:
             k = sp.alive
             color = np.tile(BLOOD, (int(k.sum()), 1))
             color[:, 3] = np.clip(sp.life[k] / sp.max_life[k], 0, 1)

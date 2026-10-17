@@ -34,3 +34,6 @@ screenshots/
 .vscode/
 Thumbs.db
 desktop.ini
+
+# Piper и голоса для озвучки фраз (tools/sfx/sfx.py скачивает сам; в игру идут только готовые wav)
+tools/sfx/piper_dl/

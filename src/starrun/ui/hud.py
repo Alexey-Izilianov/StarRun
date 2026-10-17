@@ -329,17 +329,18 @@ class Hud:
         self.buttons = []
         self._dim(vw)
         cx = vw / 2
-        self.s.rect(cx - 460, 300, cx + 460, 800, (18, 18, 22, 240))
-        self.o.draw("st_title", "Настройки", cx - 420, 740, 30, bold=True)
+        top = 760 + max(0, len(rows) - 7) * 31               # строк больше — панель выше
+        self.s.rect(cx - 460, 140, cx + 460, top + 80, (18, 18, 22, 240))
+        self.o.draw("st_title", "Настройки", cx - 420, top + 20, 30, bold=True)
         for i, row in enumerate(rows):
-            y = 640 - i * 76
+            y = top - 90 - i * 62
             self.o.draw(f"st_l{i}", row.title, cx - 420, y + 20, 18, QUIET)
             self._button(f"st_p{i}", "‹", cx + 40, y, row.prev, w=56)
             self.o.draw(f"st_v{i}", row.value, cx + 210, y + 20, 18, anchor_x="center")
             self._button(f"st_n{i}", "›", cx + 380, y, row.next, w=56)
-        self.o.draw("st_note", note, cx - 420, 430, 14, QUIET)
-        self._button("st_apply", "Применить", cx - 180, 330, apply, w=300)
-        self._button("st_back", "Назад", cx + 180, 330, back, w=300)
+        self.o.draw("st_note", note, cx - 420, 255, 14, QUIET)
+        self._button("st_apply", "Применить", cx - 180, 170, apply, w=300)
+        self._button("st_back", "Назад", cx + 180, 170, back, w=300)
         self._flush_overlay()
 
     def stats(self, world: World, vw: float) -> None:

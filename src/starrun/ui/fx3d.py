@@ -171,6 +171,7 @@ class Effects3D:
         self.lights: list[Light] = []
         self.time = 0.0
         self.prev_bullets: np.ndarray | None = None
+        self.muzzle: np.ndarray | None = None      # дуло из позы модели (Scene3D); нет — оценка по MUZZLE
 
     # ---------- события мира → частицы ----------
     def update(self, dt: float, world: World) -> None:
@@ -233,12 +234,12 @@ class Effects3D:
         p = world.player
         kinds = bl.kind[new]
         if np.isin(kinds, PLAYER_SHOTS).any():
-            muzzle = p.pos + p.facing * MUZZLE[0]
+            m = self.muzzle if self.muzzle is not None else np.array([*(p.pos + p.facing * MUZZLE[0]), MUZZLE[1]])
             big = bool(np.isin(kinds, (SNIPER, ROCKET, PELLET)).any())
             size = 34.0 if big else 22.0
-            self.fire.emit(np.array([[*muzzle, MUZZLE[1]]]), np.zeros((1, 3)), np.array([[size, size * 0.6]]),
+            self.fire.emit(m[None], np.zeros((1, 3)), np.array([[size, size * 0.6]]),
                            (1.0, 0.9, 0.6, 1.0), (1.0, 0.6, 0.2, 0.0), np.array([0.06]))
-            self.lights.append(Light((float(muzzle[0]), float(muzzle[1]), MUZZLE[1]), 200.0 if big else 130.0,
+            self.lights.append(Light((float(m[0]), float(m[1]), float(m[2])), 200.0 if big else 130.0,
                                      (1.3, 0.95, 0.55), 0.07))
         t = world.turrets
         for i in np.flatnonzero(t.alive):
@@ -289,8 +290,9 @@ class Effects3D:
             col[i, :3] = np.array(x.color) * x.strength(self.time)
         return {"u_pl_pos": tuple(pos.ravel()), "u_pl_col": tuple(col.ravel())}
 
-    def draw(self, vp: np.ndarray, view: np.ndarray, flames: np.ndarray) -> None:
-        """flames — клубы пламени огнемёта (из симуляции) в формате экземпляров: x, y, z, размер, цвет."""
+    def draw(self, vp: np.ndarray, view: np.ndarray, flames: np.ndarray, drops: np.ndarray) -> None:
+        """flames — клубы пламени огнемёта, drops — брызги жуков (из симуляции) в формате экземпляров:
+        x, y, z, размер, цвет."""
         ctx = self.ctx
         prog = self.program
         prog["u_vp"] = tuple(vp.T.ravel())
@@ -299,7 +301,7 @@ class Effects3D:
         ctx.enable(ctx.DEPTH_TEST, ctx.BLEND)
         gl.glDepthMask(gl.GL_FALSE)
         ctx.blend_func = ctx.BLEND_DEFAULT
-        self._render(self.smoke.instances())
+        self._render(np.concatenate([drops, self.smoke.instances()]))
         ctx.blend_func = ctx.SRC_ALPHA, ctx.ONE      # BLEND_ADDITIVE в Arcade — ONE, ONE: прозрачность не учлась бы
         self._render(np.concatenate([self.fire.instances(), flames]))
         ctx.blend_func = ctx.BLEND_DEFAULT
@@ -312,6 +314,22 @@ class Effects3D:
             return
         self.inst.write(inst[:n].astype(np.float32).tobytes())
         self.geometry.render(self.program, instances=n)
+
+
+def splash_drops(world: World) -> np.ndarray:
+    """Брызги жуков: капли летят дугой с высоты корпуса и падают на землю к концу жизни (там уже лежит пятно)."""
+    sp = world.splashes
+    k = np.flatnonzero(sp.alive)
+    if not len(k):
+        return np.zeros((0, 8), np.float32)
+    t = 1 - np.clip(sp.life[k] / sp.max_life[k], 0, 1)
+    out = np.empty((len(k), 8), np.float32)
+    out[:, 0:2] = sp.pos[k]
+    out[:, 2] = np.maximum(2.0, 22 + 90 * t - 110 * t * t)
+    out[:, 3] = sp.size[k] * 0.9
+    out[:, 4:7] = (0.43, 0.85, 0.16)
+    out[:, 7] = 0.95 * np.clip(1.6 - 1.6 * t, 0, 1)
+    return out
 
 
 def flame_puffs(world: World) -> np.ndarray:

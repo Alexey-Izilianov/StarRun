@@ -19,7 +19,7 @@ from starrun.sim import terrain as T
 from starrun.sim.swarm import BRAIN, FLYER, QUEEN, SEMI_BOSS, SPITTER, TANKER, WARRIOR, WORKER
 from starrun.sim.world import World
 from starrun.ui import mesh3d as M
-from starrun.ui.fx3d import GROUND_LIGHT_FS, Effects3D, Light, flame_puffs
+from starrun.ui.fx3d import GROUND_LIGHT_FS, Effects3D, Light, flame_puffs, splash_drops
 from starrun.ui.gl3d import PX_PER_M, Camera3D, look_at, ortho
 from starrun.ui.scene import ARC_LIFE, SceneRenderer
 from starrun.ui.terrain_view import TerrainView, cell_hash
@@ -34,6 +34,8 @@ BLOB = (0.0, 0.0, 0.0, 0.3)   # пятно тени под жуком (толп�
 EFFECTS_LIFT = 52.0           # пули и пламя — на высоте груди
 CORPSE_LIFE = 4.0
 MARINE_RUN_SPEED = 230.0      # при этой скорости клип бега идёт с родной частотой
+MARINE_TURN = 11.0            # рад/с: разворот к новой цели — плавный, а не прыжком
+CLIP_FADE = 0.15              # с: смена клипа (бег вперёд → вбок, бег → рубка) — перетеканием
 
 # Вид жука → модель, радиус вида (px), при котором модель в родном размере (охват ног ≈ 1,35 радиуса),
 # подсветка и высота полёта
@@ -56,6 +58,10 @@ BOSS_CLIPS = {QUEEN: (("attack", "timer_a", "volley_every"), ("summon", "timer_b
               SEMI_BOSS: (("windup", "timer_b", "summon_every"),)}
 FALL_TIME = 0.5                   # убитый летающий падает на землю
 GUNS = ("mar", "shotgun", "sniper", "flame", "rocket", "shock")   # подмеши стволов в модели десантника
+ROOF_COLORS = ((0.46, 0.22, 0.17), (0.3, 0.37, 0.41), (0.4, 0.39, 0.32), (0.5, 0.42, 0.3))   # ржавчина, сталь, …
+WALL_COLOR = (0.58, 0.56, 0.52)
+ITEM_MODELS = {T.MEDKIT: "medkit", T.MAGNET: "magnet", T.DNA: "dna", T.WEAPON_CRATE: "crate",
+               T.UNDERBARREL: "underbarrel"}
 
 
 def tree_mesh(kind: str, color: tuple[int, int, int]) -> list[M.Part]:
@@ -88,6 +94,33 @@ def tree_mesh(kind: str, color: tuple[int, int, int]) -> list[M.Part]:
     for x, y in ((14, -8), (-10, 12), (4, 16)):
         parts.append(M.box((3, 3, 18), (x, y, 40), (0.22, 0.26, 0.16)))
     return parts
+
+
+def bridge_cell() -> list[M.Part]:
+    """Клетка моста, идущего вдоль Y: доски поперёк с зазорами на двух балках, по краям — столбики и перила."""
+    plank, dark = (0.47, 0.35, 0.22), (0.3, 0.22, 0.14)
+    parts = [M.box((40, 6.2, 4), (0, -20 + 4 + 8 * k, 6), plank if k % 2 else tuple(v * 0.92 for v in plank))
+             for k in range(5)]
+    parts += [M.box((5, 40, 5), (x, 0, 2), dark) for x in (-12, 12)]
+    for s in (-1, 1):
+        parts.append(M.box((4, 4, 26), (s * 18, 0, 13), dark))
+        parts.append(M.box((4, 40, 4), (s * 18, 0, 24), plank))
+    return parts
+
+
+def shadow_proxy(kind: str) -> list[M.Part]:
+    """Силуэт дерева для карты теней: тела вращения по 8 граней, 30–50 треугольников вместо сотен. Силуэт чуть
+    меньше модели из Blender (flora.py) и целиком внутри неё — иначе он бросал бы тень на свою же крону. Пиксели."""
+    c = (0.0, 0.0, 0.0)
+    if kind == "pine":
+        return [M.lathe([(26, 16), (17, 45), (9, 70), (0, 92)], c, 8)]
+    if kind == "palm":
+        return [M.lathe([(3.5, 0), (2.5, 76)], c, 6),
+                M.lathe([(0, 82), (24, 80), (34, 66), (0, 72)], c, 8)]
+    if kind == "cactus":
+        return [M.lathe([(10, 0), (10, 46), (5, 55), (0, 57)], c, 8)]
+    return [M.lathe([(4.5, 0), (3, 62)], c, 6),
+            M.lathe([(0, 62), (18, 64), (26, 72), (18, 80), (0, 82)], c, 8)]
 
 
 @dataclass
@@ -127,9 +160,18 @@ class Scene3D:
             "rail": M.StaticMesh(ctx, [M.box((40, 4, 5), (20, 0, 18), (0.48, 0.38, 0.25)),
                                        M.box((40, 4, 5), (20, 0, 34), (0.48, 0.38, 0.25))]),
             "rock": M.StaticMesh(ctx, [M.blob(24, (0, 0, 18), (0.42, 0.4, 0.37), squash=0.75, jag=0.2, seed=5)]),
-            "roof": M.StaticMesh(ctx, [M.box((1, 1, 1), (0, 0, 0.5), (0.33, 0.3, 0.27))], capacity=64),
-            "ridge": M.StaticMesh(ctx, [M.box((1, 1, 1), (0, 0, 0.5), (0.2, 0.18, 0.16))], capacity=64),
+            "bridge": M.StaticMesh(ctx, bridge_cell(), fadeable=False),
         }
+        # детали из Blender (tools/art/props.py) заменяют процедурные, если файлы есть
+        for name in ("wall", "window", "door", "door_open", "post", "rail"):
+            path = MODELS / f"prop_{name}.npz"
+            if path.exists():
+                self.props[name] = M.StaticMesh(ctx, [M.load_part(path, PX_PER_M)], fadeable=name != "rail")
+        self.rocks = [M.StaticMesh(ctx, [M.load_part(p, PX_PER_M)]) for p in sorted(MODELS.glob("prop_rock_*.npz"))]
+        self.stumps = {p.stem.removeprefix("prop_stump_"): M.StaticMesh(ctx, [M.load_part(p, PX_PER_M)], fadeable=False)
+                       for p in MODELS.glob("prop_stump_*.npz")}
+        self.items = {kind: M.StaticMesh(ctx, [M.load_part(MODELS / f"prop_{name}.npz", PX_PER_M)], fadeable=False)
+                      for kind, name in ITEM_MODELS.items() if (MODELS / f"prop_{name}.npz").exists()}
         self.shadow_tex = ctx.depth_texture((SHADOW_SIZE, SHADOW_SIZE))
         self.shadow_tex.compare_func = None                       # читаем глубину как число (см. LIGHT в mesh3d)
         self._shadow_color = ctx.texture((SHADOW_SIZE, SHADOW_SIZE), components=1)   # Arcade требует цветовой слой
@@ -143,6 +185,7 @@ class Scene3D:
         self.point_lights: dict[str, tuple[float, ...]] = {}
         self._props_key: tuple | None = None  # type: ignore[type-arg]
         self._props_cache: list[tuple[M.StaticMesh, np.ndarray]] = []
+        self.roof_meshes: dict[tuple[int, int], tuple[M.StaticMesh, np.ndarray, float]] = {}   # (карта, постройка)
         self.reset()
 
     def reset(self) -> None:
@@ -152,6 +195,10 @@ class Scene3D:
         self.corpses: list[Corpse] = []
         self.prev_alive: np.ndarray | None = None
         self.marine_clip, self.marine_t = "idle", 0.0
+        self.marine_yaw: float | None = None
+        self.fade_from: tuple[str, float] | None = None       # прежний клип и его время, пока идёт перетекание
+        self.fade_left = 0.0
+        self.muzzle: np.ndarray | None = None                 # дуло в мире (x, y, z) — для вспышки выстрела
         self.prev_pos: np.ndarray | None = None
         self.death_t = 0.0
 
@@ -167,11 +214,12 @@ class Scene3D:
                 self.corpses.append(Corpse(sw.pos[i].copy(), math.atan2(to[1], to[0]) - math.pi / 2, name,
                                            float(sw.radius[i]) / r0, tint, lift))
         self.prev_alive = sw.alive.copy()
+        self._marine_state(dt, world)
+        self.fx.muzzle = self.muzzle
         self.fx.update(dt, world)
         for c in self.corpses:
             c.age += dt
         self.corpses = [c for c in self.corpses if c.age < CORPSE_LIFE][-300:]
-        self._marine_state(dt, world)
 
     def _marine_state(self, dt: float, world: World) -> None:
         """Клип десантника: ноги — по ходу движения относительно взгляда (вперёд, назад, вбок)."""
@@ -193,7 +241,32 @@ class Scene3D:
             t = self.marine_t + dt * speed / MARINE_RUN_SPEED
         else:
             clip, t = "idle", self.marine_t + dt
+        if clip != self.marine_clip and clip != "die":
+            self.fade_from, self.fade_left = (self.marine_clip, self.marine_t), CLIP_FADE
+        elif self.fade_from is not None:
+            self.fade_from = (self.fade_from[0], self.fade_from[1] + dt)
+        self.fade_left = max(0.0, self.fade_left - dt)
         self.marine_clip, self.marine_t = clip, t
+        # разворот к цели с ограниченной скоростью
+        want = math.atan2(p.facing[1], p.facing[0]) - math.pi / 2
+        if self.marine_yaw is None:
+            self.marine_yaw = want
+        diff = (want - self.marine_yaw + math.pi) % (2 * math.pi) - math.pi
+        self.marine_yaw += max(-MARINE_TURN * dt, min(MARINE_TURN * dt, diff))
+        a, b, f = self._marine_frames()
+        local = self.models["marine"].bone_point("muzzle", a, b, f) * PX_PER_M
+        c, s = math.cos(self.marine_yaw), math.sin(self.marine_yaw)
+        self.muzzle = np.array([p.pos[0] + c * local[0] - s * local[1], p.pos[1] + s * local[0] + c * local[1],
+                                local[2]], np.float32)
+
+    def _marine_frames(self) -> tuple[float, float, float]:
+        """Кадры позы: внутри клипа — соседние кадры, при смене клипа — кадр прежнего и кадр нового."""
+        mar = self.models["marine"]
+        a, b, f = (float(v) for v in mar.frames(self.marine_clip, self.marine_t))
+        if self.fade_from is None or self.fade_left <= 0:
+            return a, b, f
+        oa, ob, of = (float(v) for v in mar.frames(*self.fade_from))
+        return (oa if of < 0.5 else ob), (a if f < 0.5 else b), 1 - self.fade_left / CLIP_FADE
 
     # ---------- кадр ----------
     def draw(self, world: World, cam: Camera3D, scene: SceneRenderer, shapes) -> None:  # type: ignore[no-untyped-def]
@@ -201,7 +274,8 @@ class Scene3D:
         rect = cam.ground_rect()
         view = (rect[0] - 80, rect[1] - 80, rect[2] + 80, rect[3] + 120)
         scene.map.prepare(world, view)
-        props = self._visible(self._props(world, rect), rect)
+        props = self._visible(self._props(world, rect), rect) + self._items(world)
+        scene.map.flat_stumps = scene.map.flat_items = not self.stumps    # пни и находки — моделями
         roofs = self._roofs(world, scene.map)
         units = self._units(world)
 
@@ -230,7 +304,7 @@ class Scene3D:
         for mesh, inst in roofs:
             mesh.draw(self.static, inst)
         ctx.disable(ctx.DEPTH_TEST)
-        self.fx.draw(cam.view_proj, cam.view, flame_puffs(world))
+        self.fx.draw(cam.view_proj, cam.view, flame_puffs(world), splash_drops(world))
 
         shapes.lift = EFFECTS_LIFT
         scene.effects(world, volumetric=True)
@@ -286,10 +360,11 @@ class Scene3D:
         key = (biome.tree, tuple(biome.tree_color))
         if key not in self.trees:
             files = sorted(MODELS.glob(f"flora_{biome.tree}_*.npz"))
-            simple = M.StaticMesh(self.ctx, tree_mesh(biome.tree, biome.tree_color))
-            self.trees[key] = [M.StaticMesh(self.ctx, [M.load_part(f, PX_PER_M)]) for f in files] or [simple]
-            # в карту теней — процедурное дерево: силуэт тот же, треугольников вчетверо меньше (лес — сотни)
-            self.shadow_lod.update({mesh: simple for mesh in self.trees[key]})
+            meshes = [M.StaticMesh(self.ctx, [M.load_part(f, PX_PER_M)]) for f in files]
+            self.trees[key] = meshes or [M.StaticMesh(self.ctx, tree_mesh(biome.tree, biome.tree_color))]
+            # в карту теней — грубый силуэт: деревьев на экране сотни, а тень от лап и листьев не разглядеть
+            proxy = M.StaticMesh(self.ctx, shadow_proxy(biome.tree))
+            self.shadow_lod.update({mesh: proxy for mesh in self.trees[key]})
         return self.trees[key]
 
     @staticmethod
@@ -359,6 +434,15 @@ class Scene3D:
                 continue
             yaw = np.where(TerrainView._along_x(kind, xs - x0, ys - y0), 0.0, math.pi / 2) if k != T.WALL else 0.0
             out.append((self.props[name], M.instances(pos, yaw=yaw)))
+        # мосты: настил и перила (у клетки, идущей вдоль X, — поворот на 90°)
+        xs, ys, pos = cells(kind == T.BRIDGE)
+        if len(xs):
+            lx, ly = xs - x0, ys - y0
+            h_, w_ = kind.shape
+            up = np.where(ly + 1 < h_, kind[np.minimum(ly + 1, h_ - 1), lx], T.GROUND)
+            down = np.where(ly > 0, kind[np.maximum(ly - 1, 0), lx], T.GROUND)
+            along_y = (up == T.BRIDGE) | (down == T.BRIDGE)
+            out.append((self.props["bridge"], M.instances(pos, yaw=np.where(along_y, 0.0, math.pi / 2))))
         # заборы: столбы и перекладины к соседям справа и сверху
         xs, ys, pos = cells(kind == T.FENCE)
         if len(xs):
@@ -369,34 +453,65 @@ class Scene3D:
             up = (ly + 1 < h_) & (kind[np.minimum(ly + 1, h_ - 1), lx] == T.FENCE)
             out.append((self.props["rail"], np.concatenate([M.instances(pos[right]),
                                                             M.instances(pos[up], yaw=math.pi / 2)])))
-        # скалы по краю
+        # скалы по краю: глыбы смыкаются в обрыв
         xs, ys, pos = cells(kind == T.ROCK)
         if len(xs):
             h = cell_hash(xs, ys, 5)
-            s = 1.1 + 0.6 * h
             pos = pos + (np.stack([h, cell_hash(xs, ys, 6)], 1) - 0.5) * 14
-            out.append((self.props["rock"], M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s * 0.9], 1))))
+            if self.rocks:
+                s = 0.95 + 0.45 * h
+                inst = M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s * (0.8 + 0.4 * cell_hash(xs, ys, 3))], 1))
+                pick = (cell_hash(xs, ys, 2) * len(self.rocks)).astype(int) % len(self.rocks)
+                out += [(mesh, inst[pick == v]) for v, mesh in enumerate(self.rocks) if (pick == v).any()]
+            else:
+                s = 1.1 + 0.6 * h
+                out.append((self.props["rock"], M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s * 0.9], 1))))
+        # пни срубленных деревьев
+        stump = self.stumps.get(t.biome.tree)
+        xs, ys, pos = cells(kind == T.STUMP)
+        if stump is not None and len(xs):
+            h = cell_hash(xs, ys, 4)
+            pos = pos + (h[:, None] - 0.5) * 10                        # там же, где был плоский пень
+            s = 0.9 + 0.3 * h
+            out.append((stump, M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s], 1))))
+        return out
+
+    def _items(self, world: World) -> list[tuple[M.StaticMesh, np.ndarray]]:
+        """Находки: медленно вращаются и покачиваются над землёй — видно издалека, что это не декор."""
+        idx = np.flatnonzero(world.item_alive)
+        out = []
+        for kind, mesh in self.items.items():
+            ii = idx[world.item_kind[idx] == kind]
+            if len(ii):
+                phase = self.time * 2.2 + ii * 1.3
+                out.append((mesh, M.instances(world.item_pos[ii], yaw=self.time * 0.9 + ii, z=6 + 4 * np.sin(phase),
+                                              scale=(1.3, 1.3, 1.3))))
         return out
 
     def _roofs(self, world: World, view: TerrainView) -> list[tuple[M.StaticMesh, np.ndarray]]:
-        """Крыши поверх всего: прячутся, когда десантник внутри (TerrainView.roof_alpha)."""
+        """Двускатные крыши поверх всего: прячутся, когда десантник внутри (TerrainView.roof_alpha). Меш у каждой
+        постройки свой (размеры разные), собирается один раз; конёк — вдоль длинной стороны."""
         t = world.terrain
         if t is None:
             return []
         cell = t.cell
-        roofs, ridges = [], []
+        out = []
         for bid, bd in view._buildings(t):
             a = view.roof_alpha.get(bid, 1.0)
             if a <= 0.02:
                 continue
-            w, d = (bd.x1 - bd.x0 + 1) * cell + 10, (bd.y1 - bd.y0 + 1) * cell + 10
-            c = np.array([[(bd.x0 + bd.x1 + 1) / 2 * cell, (bd.y0 + bd.y1 + 1) / 2 * cell]], np.float32)
-            roofs.append(M.instances(c, z=WALL_H, scale=(w, d, 14), alpha=a))
-            ridge = (w, 10, 8) if w >= d else (10, d, 8)
-            ridges.append(M.instances(c, z=WALL_H + 14, scale=ridge, alpha=a))
-        if not roofs:
-            return []
-        return [(self.props["roof"], np.concatenate(roofs)), (self.props["ridge"], np.concatenate(ridges))]
+            key = (id(t), bid)
+            if key not in self.roof_meshes:
+                w, d = (bd.x1 - bd.x0 + 1) * cell, (bd.y1 - bd.y0 + 1) * cell
+                long, short = max(w, d), min(w, d)
+                parts = M.gable_roof(long, short, min(70.0, short * 0.32), ROOF_COLORS[bid % len(ROOF_COLORS)],
+                                     WALL_COLOR, seed=bid)
+                center = np.array([(bd.x0 + bd.x1 + 1) / 2 * cell, (bd.y0 + bd.y1 + 1) / 2 * cell], np.float32)
+                yaw = 0.0 if w >= d else math.pi / 2
+                self.roof_meshes[key] = (M.StaticMesh(self.ctx, parts, capacity=1), center, yaw)
+            mesh, center, yaw = self.roof_meshes[key]
+            out.append((mesh, M.instances(center[None], yaw=yaw, z=WALL_H, alpha=a)))
+        return out
 
     def _blob_shadows(self, world: World, shapes) -> None:  # type: ignore[no-untyped-def]
         """Пятна тени под жуками и трупами — сдвинуты от солнца, у летающих — дальше и бледнее."""
@@ -448,9 +563,8 @@ class Scene3D:
         out: list[tuple[str, np.ndarray, tuple[str, ...]]] = []
         # десантник
         p = world.player
-        mar = self.models["marine"]
-        a, b, f = mar.frames(self.marine_clip, self.marine_t)
-        yaw = math.atan2(p.facing[1], p.facing[0]) - math.pi / 2
+        a, b, f = self._marine_frames()
+        yaw = self.marine_yaw if self.marine_yaw is not None else math.atan2(p.facing[1], p.facing[0]) - math.pi / 2
         hurt = (0.9, 0.2, 0.15, 0.35) if p.hurt > 0 else (0, 0, 0, 0)
         inst = np.array([[p.pos[0], p.pos[1], 0.0, yaw, a, b, f, 1.0, *hurt]], np.float32)
         out.append(("marine", inst, self._marine_subs(world)))

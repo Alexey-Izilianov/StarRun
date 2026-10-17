@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,6 +136,7 @@ STATIC_VS = """
 #version 330
 uniform mat4 u_vp;
 uniform vec2 u_player;
+uniform float u_fadeable;      // 0 — низкие предметы (пни, находки): десантника они не закрывают
 in vec3 in_pos; in vec3 in_nrm; in vec4 in_col;
 in vec4 i_a;       // x, y, z, курс
 in vec4 i_s;       // масштаб по x, y, z; прозрачность
@@ -143,7 +145,8 @@ out vec3 v_wp; out vec3 v_n; out vec4 v_col; out float v_fade;
 void main() {
     // стоит между камерой и десантником (южнее, в полосе к камере) — растворяется сеткой, иначе его не видно
     vec2 rel = i_a.xy - u_player;
-    v_fade = (rel.y < 40.0 && rel.y > -230.0 && abs(rel.x) < 70.0 + max(0.0, -rel.y) * 0.15) ? 1.0 : 0.0;
+    bool between = rel.y < 40.0 && rel.y > -230.0 && abs(rel.x) < 70.0 + max(0.0, -rel.y) * 0.15;
+    v_fade = (u_fadeable > 0.5 && between) ? 1.0 : 0.0;
     float c = cos(i_a.w), s = sin(i_a.w);
     mat2 r = mat2(c, s, -s, c);
     vec3 p = in_pos * i_s.xyz;
@@ -246,9 +249,17 @@ class SkinnedModel:
                       zip(d["clip_names"], d["clip_ranges"], d["clip_loop"], strict=True)}
         self.fps = float(d["fps"])
         self.bone_names = [str(b) for b in d["bone_names"]]
+        self.bone_data = anim                        # для точек крепления на CPU: дуло, кисть
+        self.bone_heads = d["bone_heads"]
         stem = path.with_suffix("")
         self.albedo = load_texture(ctx, Path(f"{stem}_albedo.png"))
         self.mask = load_texture(ctx, Path(f"{stem}_mask.png"))
+
+    def bone_point(self, bone: str, a: float, b: float, frac: float) -> np.ndarray:
+        """Сустав bone в позе «кадр a → b, доля frac» в осях модели (метры): где сейчас, например, дуло."""
+        i = self.bone_names.index(bone)
+        m = self.bone_data[int(a), i] * (1 - frac) + self.bone_data[int(b), i] * frac
+        return m[:, :3] @ self.bone_heads[i] + m[:, 3]
 
     def duration(self, clip: str) -> float:
         return (self.clips[clip].frames - 1) / self.fps
@@ -290,7 +301,8 @@ class StaticMesh:
     FLOATS = 12
 
     def __init__(self, ctx: arcade.ArcadeContext, parts: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
-                 capacity: int = 4096) -> None:
+                 capacity: int = 4096, fadeable: bool = True) -> None:
+        self.fadeable = fadeable
         pos, nrm, col, idx = merge(parts)
         verts = np.concatenate([pos, nrm, col], 1).astype(np.float32)
         self.vbo = ctx.buffer(data=verts.tobytes())
@@ -308,6 +320,8 @@ class StaticMesh:
         if not n:
             return
         self.inst.write(inst[:n].astype(np.float32).tobytes())
+        with contextlib.suppress(KeyError):           # в проходе теней униформы нет
+            program["u_fadeable"] = 1.0 if self.fadeable else 0.0
         self.geometry.render(program, vertices=self.count, instances=n)
 
 
@@ -378,6 +392,54 @@ def box(size: Vec3, center: Vec3, color: Vec3) -> Part:
     p = np.array(pos, np.float32)
     top = (p[:, 2] - p[:, 2].min()) / max(1e-6, np.ptp(p[:, 2]))
     return p, np.array(nrm, np.float32), _color(len(p), color, top), np.array(idx, np.uint32)
+
+
+def quads(polys: list[tuple[list[Vec3], Vec3]]) -> Part:
+    """Плоские многоугольники (выпуклые, против часовой снаружи) своего цвета: скаты крыш, фронтоны."""
+    pos, nrm, col, idx = [], [], [], []
+    for pts, color in polys:
+        p = np.array(pts, np.float32)
+        n = np.cross(p[1] - p[0], p[2] - p[0])
+        n = n / (np.linalg.norm(n) + 1e-9)
+        base = len(pos)
+        pos += list(p)
+        nrm += [n] * len(p)
+        col += [(*color, 1.0)] * len(p)
+        for k in range(1, len(p) - 1):
+            idx += [base, base + k, base + k + 1]
+    return (np.array(pos, np.float32), np.array(nrm, np.float32), np.array(col, np.float32),
+            np.array(idx, np.uint32))
+
+
+def gable_roof(length: float, width: float, rise: float, color: Vec3, wall: Vec3, seed: int = 0) -> list[Part]:
+    """Двускатная крыша постройки length × width (конёк вдоль X), низ — на z = 0: свес, полосы профнастила,
+    фронтоны цвета стен, конёк, вентиляционный короб."""
+    over = 10.0
+    hl, hw = length / 2 + over, width / 2 + over
+    drop = rise * over / (width / 2)                  # свес продолжает скат вниз
+    polys: list[tuple[list[Vec3], Vec3]] = []
+    strips = max(2, int(length / 12))
+    for i in range(strips):
+        x0, x1 = -hl + 2 * hl * i / strips, -hl + 2 * hl * (i + 1) / strips
+        shade = 1.0 if i % 2 else 0.86                 # профнастил: полосы через одну темнее
+        c = tuple(v * shade for v in color)
+        polys.append(([(x0, -hw, -drop), (x1, -hw, -drop), (x1, 0, rise), (x0, 0, rise)], c))
+        polys.append(([(x1, hw, -drop), (x0, hw, -drop), (x0, 0, rise), (x1, 0, rise)], c))
+    dark = tuple(v * 0.55 for v in color)
+    edge = [(-hl, -drop - 4), (hl, -drop - 4), (hl, -drop), (-hl, -drop)]       # торец свеса: x, z
+    polys += [([(x, s * hw, z) for x, z in edge][::s], dark) for s in (-1, 1)]
+    for s in (-1, 1):                                  # фронтоны
+        x = s * length / 2
+        tri = [(x, -width / 2, 0.0), (x, width / 2, 0.0), (x, 0.0, rise * (width / 2) / (width / 2))]
+        polys.append((tri if s > 0 else tri[::-1], wall))
+    parts = [quads(polys), box((2 * hl, 9, 6), (0, 0, rise + 1), dark)]
+    rnd = np.random.default_rng(seed)
+    if width > 120:                                     # короб вентиляции на южном скате
+        x = float(rnd.uniform(-length / 4, length / 4))
+        y = -width / 4
+        parts.append(box((22, 18, 16), (x, y, rise / 2 + 6), (0.5, 0.5, 0.52)))
+        parts.append(box((24, 20, 3), (x, y, rise / 2 + 15), (0.3, 0.3, 0.32)))
+    return parts
 
 
 def lathe(profile: list[tuple[float, float]], color: tuple[float, float, float], seg: int = 12,

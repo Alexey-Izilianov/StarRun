@@ -66,6 +66,8 @@ def shade(color: tuple[int, int, int], k: float, alpha: float = 1.0) -> np.ndarr
 
 class TerrainView:
     def __init__(self, shapes: Shapes) -> None:
+        self.flat_stumps = True         # в 3D пни и находки — моделями (Scene3D), здесь только кольцо находки
+        self.flat_items = True
         self.c = shapes
         self.time = 0.0
         self.roof_alpha: dict[int, float] = {}
@@ -178,7 +180,7 @@ class TerrainView:
         self._floors(world)
 
         stumps = kind == T.STUMP
-        if stumps.any():
+        if stumps.any() and self.flat_stumps:
             xs, ys = self._cells(stumps, x0, y0)
             h = cell_hash(xs, ys, 4)
             pos = self._centers(xs, ys, cell) + (h[:, None] - 0.5) * 10
@@ -385,6 +387,8 @@ class TerrainView:
         pulse = 0.5 + 0.5 * np.sin(self.time * 3)
         pos_all = world.item_pos[idx]
         c.add(pos_all, 46 + 6 * pulse, rgba((255, 255, 255), 0.06 + 0.06 * pulse))
+        if not self.flat_items:
+            return
         for kind, (main, detail) in ITEM_COLORS.items():
             pos = pos_all[world.item_kind[idx] == kind]
             if not len(pos):

@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 MODELS = Path(__file__).resolve().parents[1] / "assets" / "models"
-NAMES = sorted(p.stem for p in MODELS.glob("*.npz") if not p.stem.startswith("flora_"))
-FLORA = sorted(p.stem for p in MODELS.glob("flora_*.npz"))
+STATIC = ("flora_", "prop_")          # статичные: деревья и детали карты (tools/art/flora.py, props.py)
+NAMES = sorted(p.stem for p in MODELS.glob("*.npz") if not p.stem.startswith(STATIC))
+FLORA = sorted(p.stem for p in MODELS.glob("*.npz") if p.stem.startswith(STATIC))
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -38,7 +39,7 @@ def test_first_models_exist() -> None:
 
 @pytest.mark.parametrize("name", FLORA)
 def test_flora_file_is_consistent(name: str) -> None:
-    """Дерево из tools/art/flora.py: цвет вершин в 0..1, стоит на земле, не выше 2,5 м (не закрывает бой)."""
+    """Дерево или деталь карты: цвет вершин в 0..1, стоит на земле, не выше 2,5 м (не закрывает бой)."""
     m = np.load(MODELS / f"{name}.npz")
     n = len(m["positions"])
     assert m["normals"].shape == (n, 3) and m["colors"].shape == (n, 4)
@@ -48,4 +49,6 @@ def test_flora_file_is_consistent(name: str) -> None:
 
 
 def test_every_biome_tree_has_models() -> None:
-    assert {n.rsplit("_", 1)[0] for n in FLORA} == {"flora_pine", "flora_palm", "flora_cactus", "flora_swamp"}
+    trees = {"pine", "palm", "cactus", "swamp"}
+    assert {n.rsplit("_", 1)[0] for n in FLORA if n.startswith("flora_")} == {f"flora_{t}" for t in trees}
+    assert {f"prop_stump_{t}" for t in trees} <= set(FLORA)

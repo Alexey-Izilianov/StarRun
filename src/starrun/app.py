@@ -16,6 +16,7 @@ from arcade.types import LRBT
 from starrun.balance import BIOME_IDS, Balance
 from starrun.settings import Settings, resolutions
 from starrun.sim.world import Controls, World
+from starrun.ui.audio import Audio
 from starrun.ui.gl3d import Camera3D
 from starrun.ui.hud import H, Hud, SettingRow
 from starrun.ui.postfx import PostFX
@@ -68,6 +69,7 @@ class Game(arcade.Window):
         self.wheel = 0
         self.mouse_screen = (0.0, 0.0)
         self.shake = 0.0
+        self.audio = Audio(self.settings)
         self.apply_display()
         self.new_run()
 
@@ -81,6 +83,7 @@ class Game(arcade.Window):
             self.scene3d.reset()
             self._follow(0.0)
         self.hud = Hud(self.shapes)
+        self.audio.reset(self.world)
         self.mode = Mode.PLAY
         self.background_color = self.balance.biomes[biome].ground if biome else GROUND
         name = self.balance.biomes[biome].name if biome else "Полигон"
@@ -142,16 +145,24 @@ class Game(arcade.Window):
         def flip(field: str) -> None:
             self.draft = replace(self.draft, **{field: not getattr(self.draft, field)})
 
+        def level(field: str, title: str) -> SettingRow:
+            def step(k: int) -> None:
+                self.draft = replace(self.draft, **{field: max(0, min(10, getattr(self.draft, field) + k))})
+            return SettingRow(title, f"{getattr(d, field) * 10} %", lambda: step(-1), lambda: step(1))
+
         return [SettingRow("Разрешение", f"{current[0]} × {current[1]}", lambda: res(-1), lambda: res(1)),
                 SettingRow("Режим", "полный экран" if d.fullscreen else "окно",
                            lambda: flip("fullscreen"), lambda: flip("fullscreen")),
                 SettingRow("Сглаживание", "вкл" if d.antialiasing else "выкл",
-                           lambda: flip("antialiasing"), lambda: flip("antialiasing"))]
+                           lambda: flip("antialiasing"), lambda: flip("antialiasing")),
+                level("volume", "Громкость"), level("sfx_volume", "Эффекты"), level("voice_volume", "Голос"),
+                level("ambient_volume", "Фон")]
 
     def apply_settings(self) -> None:
         aa_changed = self.draft.antialiasing != self.settings.antialiasing
         self.settings = self.draft
         self.settings.save()
+        self.audio.settings = self.settings
         self.apply_display()
         if aa_changed:
             self.hud.notify("Сглаживание изменится после перезапуска игры")
@@ -214,7 +225,8 @@ class Game(arcade.Window):
 
     def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> None:
         p = self.ui_cam.unproject((x, y))
-        self.hud.click(p.x, p.y)
+        if self.hud.click(p.x, p.y):
+            self.audio.ui()
 
     def on_deactivate(self) -> None:
         # Окно потеряло фокус (Alt+Tab): клавиши «залипают», игра встаёт на паузу
@@ -233,9 +245,11 @@ class Game(arcade.Window):
         if running:
             w.step(delta_time, self.controls())
             self._react(w.events)
+            self.audio.react(w.events, w)
             self.scene.update(delta_time, w)
             if self.scene3d:
                 self.scene3d.update(delta_time, w)
+        self.audio.update(delta_time, w, paused=not running)
         self.hud.update(delta_time if running else 0.0)
         self.shake = max(0.0, self.shake - delta_time * 30)
         self._follow(self.shake)

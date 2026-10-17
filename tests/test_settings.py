@@ -16,7 +16,7 @@ def test_broken_or_foreign_file_falls_back_to_defaults(tmp_path: Path) -> None:
     assert Settings.load(path) == Settings()                       # файла нет
     path.write_text("{не json", encoding="utf-8")
     assert Settings.load(path) == Settings()
-    path.write_text('{"width": "big", "fullscreen": false, "volume": 3}', encoding="utf-8")
+    path.write_text('{"width": "big", "fullscreen": false, "difficulty": 3}', encoding="utf-8")
     assert Settings.load(path) == Settings(fullscreen=False)        # неверный тип и чужой ключ — мимо
 
 
