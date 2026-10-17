@@ -123,6 +123,14 @@ class Button:
 
 
 @dataclass
+class SettingRow:
+    title: str
+    value: str
+    prev: Callable[[], None]
+    next: Callable[[], None]
+
+
+@dataclass
 class Banner:
     text: str
     left: float = 3.0
@@ -305,13 +313,33 @@ class Hud:
         self._flush_overlay()
 
     def pause(self, vw: float, resume: Callable[[], None], restart: Callable[[], None],
-              leave: Callable[[], None]) -> None:
+              settings: Callable[[], None], leave: Callable[[], None]) -> None:
         self.buttons = []
         self._dim(vw)
         self.o.draw("p_title", "Пауза", vw / 2, 700, 34, anchor_x="center", bold=True)
         self._button("resume", "Продолжить", vw / 2, 580, resume)
         self._button("restart", "Начать заново", vw / 2, 508, restart)
-        self._button("leave", "Выйти из игры", vw / 2, 436, leave)
+        self._button("settings", "Настройки", vw / 2, 436, settings)
+        self._button("leave", "Выйти из игры", vw / 2, 364, leave)
+        self._flush_overlay()
+
+    def settings(self, vw: float, rows: list[SettingRow], apply: Callable[[], None], back: Callable[[], None],
+                 note: str) -> None:
+        """Строка: название слева, значение по центру, стрелки «‹ ›» листают варианты."""
+        self.buttons = []
+        self._dim(vw)
+        cx = vw / 2
+        self.s.rect(cx - 460, 300, cx + 460, 800, (18, 18, 22, 240))
+        self.o.draw("st_title", "Настройки", cx - 420, 740, 30, bold=True)
+        for i, row in enumerate(rows):
+            y = 640 - i * 76
+            self.o.draw(f"st_l{i}", row.title, cx - 420, y + 20, 18, QUIET)
+            self._button(f"st_p{i}", "‹", cx + 40, y, row.prev, w=56)
+            self.o.draw(f"st_v{i}", row.value, cx + 210, y + 20, 18, anchor_x="center")
+            self._button(f"st_n{i}", "›", cx + 380, y, row.next, w=56)
+        self.o.draw("st_note", note, cx - 420, 430, 14, QUIET)
+        self._button("st_apply", "Применить", cx - 180, 330, apply, w=300)
+        self._button("st_back", "Назад", cx + 180, 330, back, w=300)
         self._flush_overlay()
 
     def stats(self, world: World, vw: float) -> None:

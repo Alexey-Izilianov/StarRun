@@ -53,6 +53,8 @@ SEARCH_RING = np.maximum(np.abs(SEARCH_DX), np.abs(SEARCH_DY))
 
 DOOR_REACH = 0.7  # дверь открывается, когда десантник ближе этой доли клетки к её краю
 FLOW_STEPS = 20   # шагов обхода в ширину поля путей за кадр
+CHOP_REACH = 8.0  # топор достаёт дальше, чем колется кактус (касание +3 px): колет — значит, и рубит
+CHOP_CONE = 0.3   # косинус: дерево рубится, если оно по ходу движения, а не сбоку или сзади
 
 # Находки на карте
 MEDKIT, MAGNET, DNA, WEAPON_CRATE, UNDERBARREL = range(5)
@@ -459,12 +461,22 @@ class Terrain:
         return np.array([px, py], np.float32)
 
     def tree_ahead(self, pos: np.ndarray, direction: np.ndarray, radius: float) -> tuple[int, int] | None:
-        """Клетка-дерево, в которую упирается десантник, — её рубит топор."""
-        probe = pos + direction * (radius + self.cell * 0.35)
-        if self.kinds_at(probe)[0] != TREE:
-            return None
-        ix, iy = self.cells(probe)
-        return int(ix[0]), int(iy[0])
+        """Дерево, в которое упирается десантник, — его рубит топор: ближайшая клетка-дерево, до которой круг
+        десантника достаёт, и не сзади и не сбоку от хода. Не точка строго по ходу: подходя под углом или в угол
+        клетки, десантник иначе колется о кактус, но не рубит его."""
+        c = self.cell
+        cx, cy = int(pos[0] // c), int(pos[1] // c)
+        best, best_d = None, math.inf
+        for y in range(max(0, cy - 1), min(self.n, cy + 2)):
+            for x in range(max(0, cx - 1), min(self.n, cx + 2)):
+                if self.kind[y, x] != TREE:
+                    continue
+                d = self.distance_to_cell(pos, x, y)
+                to = ((x + 0.5) * c - pos[0], (y + 0.5) * c - pos[1])
+                ahead = (to[0] * direction[0] + to[1] * direction[1]) / (math.hypot(*to) + 1e-9)
+                if d <= radius + CHOP_REACH and ahead > CHOP_CONE and d < best_d:
+                    best, best_d = (x, y), d
+        return best
 
     def touching(self, pos: np.ndarray, radius: float, kind: int) -> bool:
         c = self.cell

@@ -121,6 +121,26 @@ def test_axe_chops_a_tree_in_the_way(balance: Balance) -> None:
     assert events.count("chop") == balance.biomes["forest"].tree_hp and "tree_down" in events
 
 
+@pytest.mark.parametrize("start, move, cacti", [
+    ((100.5, 100.5), (1, 0), [(102, 100)]),                      # прямо
+    ((100.6, 98.6), (0.7, 0.7), [(102, 100)]),                   # в угол клетки
+    ((100.4, 99.4), (0.7, 0.7), [(102, 100), (101, 101)]),       # в угол между двумя: скользить некуда
+])
+def test_cactus_is_chopped_when_pressed(balance: Balance, start: tuple[float, float], move: tuple[float, float],
+                                        cacti: list[tuple[int, int]]) -> None:
+    """Если десантник упирается в кактус и колется — он его и рубит, с какой стороны ни подойди."""
+    w = blank(balance, "desert")
+    t = w.terrain
+    assert t is not None
+    for x, y in cacti:
+        t.kind[y, x] = T.TREE
+        t.hp[y, x] = balance.biomes["desert"].tree_hp
+    w.player.pos = np.array(start, np.float32) * C
+    for _ in range(int(2.5 / DT)):
+        w.step(DT, Controls(move=move))
+    assert any(t.kind[y, x] == T.STUMP for x, y in cacti)
+
+
 def test_quicksand_sinks_slows_and_hurts(balance: Balance) -> None:
     w = blank(balance, "desert")
     t = w.terrain

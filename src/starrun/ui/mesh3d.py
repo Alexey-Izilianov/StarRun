@@ -29,9 +29,15 @@ float shadow(vec3 wp) {
     vec3 c = l.xyz / l.w * 0.5 + 0.5;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
     float z = c.z - 0.0015;
-    float d = 0.75 * u_texel;
-    return 0.25 * (step(z, texture(u_shadow, c.xy + vec2(-d, -d)).r) + step(z, texture(u_shadow, c.xy + vec2(d, -d)).r)
-                 + step(z, texture(u_shadow, c.xy + vec2(-d, d)).r) + step(z, texture(u_shadow, c.xy + vec2(d, d)).r));
+    // билинейное сглаживание сравнений по четырём соседним текселям: край тени плавный, а не ступеньками
+    vec2 st = c.xy / u_texel - 0.5;
+    vec2 f = fract(st);
+    vec2 b = (floor(st) + 0.5) * u_texel;
+    float s00 = step(z, texture(u_shadow, b).r);
+    float s10 = step(z, texture(u_shadow, b + vec2(u_texel, 0.0)).r);
+    float s01 = step(z, texture(u_shadow, b + vec2(0.0, u_texel)).r);
+    float s11 = step(z, texture(u_shadow, b + vec2(u_texel, u_texel)).r);
+    return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
 
 vec3 shade(vec3 albedo, vec3 n, vec3 wp, float metal, float gloss) {
@@ -97,8 +103,9 @@ void main() {
     if (u_glow.a > 0.0) {
         col = min(u_glow.rgb * (0.9 + 0.12 * u_glow.a), vec3(1.0));
     } else {
-        vec4 mk = texture(u_mask, v_uv);
-        col = shade(texture(u_albedo, v_uv).rgb, normalize(v_n), v_wp, mk.r, mk.a);
+        // смещение мип-уровня к резкости: модели на экране мелкие, иначе берётся размытый уровень
+        vec4 mk = texture(u_mask, v_uv, -0.75);
+        col = shade(texture(u_albedo, v_uv, -0.75).rgb, normalize(v_n), v_wp, mk.r, mk.a);
     }
     f_color = vec4(mix(col, v_tint.rgb, v_tint.a), 1.0);
 }

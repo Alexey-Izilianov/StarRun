@@ -26,7 +26,7 @@ from starrun.ui.terrain_view import TerrainView, cell_hash
 MODELS = Path(__file__).resolve().parents[3] / "assets" / "models"
 SUN = np.array([0.42, -0.5, 0.76]) / np.linalg.norm([0.42, -0.5, 0.76])   # солнце с юго-востока: тени — на северо-запад
 SHADOW_SIZE = 2048
-SHADOW_HALF = 1400.0          # полуразмер области карты теней вокруг десантника, px
+SHADOW_HALF = 1000.0          # полуразмер области карты теней вокруг десантника: видимая земля — до ~±900 px
 WALL_H = 110.0                # высота стен построек, px (2,3 м)
 PROPS_CHUNK = 8               # окно статичных мешей сдвигается шагом в столько клеток — пересборка редкая
 BLOB = (0.0, 0.0, 0.0, 0.3)   # пятно тени под жуком (толпа не рисуется в карту теней)
@@ -53,10 +53,11 @@ def tree_mesh(kind: str, color: tuple[int, int, int]) -> list[M.Part]:
     lt = tuple(min(1.0, v * 1.25) for v in c)
     bark = (0.36, 0.26, 0.17)
     if kind == "cactus":
-        col = [(9.0, 0), (10.0, 6), (10.0, 46), (8.0, 56), (0.0, 60)]
-        arm = [(5.0, 0), (5.5, 4), (5.5, 20), (4.5, 25), (0.0, 27)]
-        return [M.lathe(col, c, 10), M.lathe(arm, c, 8, center=(12, 0, 22)), M.lathe(arm, c, 8, center=(-11, 3, 30)),
-                M.box((14, 7, 7), (6, 0, 24), c), M.box((13, 7, 7), (-6, 2, 32), c)]
+        # ствол почти в клетку шириной: видимый кактус — там, где десантник в него упирается
+        col = [(12.0, 0), (13.5, 6), (13.5, 46), (11.0, 56), (0.0, 60)]
+        arm = [(6.5, 0), (7.0, 4), (7.0, 20), (5.5, 25), (0.0, 27)]
+        return [M.lathe(col, c, 12), M.lathe(arm, c, 8, center=(17, 0, 22)), M.lathe(arm, c, 8, center=(-16, 3, 30)),
+                M.box((18, 9, 9), (9, 0, 24), c), M.box((17, 9, 9), (-8, 2, 32), c)]
     if kind == "pine":
         return [M.lathe([(4.5, 0), (3.5, 30)], bark, 8),
                 M.lathe([(25, 0), (22, 4), (0, 46)], c, 12, center=(0, 0, 22), jag=0.12, seed=1),
@@ -288,9 +289,11 @@ class Scene3D:
         xs, ys, pos = cells(kind == T.TREE)
         if len(xs):
             h = cell_hash(xs, ys, 7)
-            pos = pos + (np.stack([cell_hash(xs, ys, 9), cell_hash(xs, ys, 8)], 1) - 0.5) * 30   # без рядов по сетке
+            spread = 6.0 if t.biome.tree == "cactus" else 30.0     # кроны шире клетки — их можно сдвинуть, кактус нет
+            pos = pos + (np.stack([cell_hash(xs, ys, 9), cell_hash(xs, ys, 8)], 1) - 0.5) * spread   # без рядов
             hp = np.clip(t.hp[np.clip(ys, 0, t.n - 1), np.clip(xs, 0, t.n - 1)] / max(1, t.biome.tree_hp), 0, 1)
-            s = (0.72 + 0.55 * h ** 1.5) * (0.7 + 0.3 * hp)
+            size = 0.9 + 0.2 * h if t.biome.tree == "cactus" else 0.72 + 0.55 * h ** 1.5
+            s = size * (0.7 + 0.3 * hp)
             out.append((self._tree(t.biome), M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s], 1))))
         # стены, окна, двери
         for k, name in ((T.WALL, "wall"), (T.WINDOW, "window"), (T.DOOR, "door"), (T.OPEN_DOOR, "door_open")):

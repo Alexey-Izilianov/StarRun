@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from enum import Enum, auto
 
 import arcade
@@ -13,9 +14,11 @@ import numpy as np
 from arcade.types import LRBT
 
 from starrun.balance import BIOME_IDS, Balance
+from starrun.settings import Settings, resolutions
 from starrun.sim.world import Controls, World
 from starrun.ui.gl3d import Camera3D
-from starrun.ui.hud import H, Hud
+from starrun.ui.hud import H, Hud, SettingRow
+from starrun.ui.postfx import PostFX
 from starrun.ui.render import Shapes
 from starrun.ui.scene import GROUND, SceneRenderer
 from starrun.ui.scene3d import Scene3D
@@ -34,12 +37,19 @@ class Mode(Enum):
     PLAY = auto()
     PAUSE = auto()
     STATS = auto()
+    SETTINGS = auto()
 
 
 class Game(arcade.Window):
-    def __init__(self, windowed: bool, seed: int | None, biome: str = BIOME_IDS[0], flat: bool = False) -> None:
-        super().__init__(1600, 900, "StarRun", fullscreen=not windowed, resizable=True, vsync=True,
-                         update_rate=1 / 120, draw_rate=1 / 120)
+    def __init__(self, windowed: bool, seed: int | None, biome: str = BIOME_IDS[0], flat: bool = False,
+                 settings: Settings | None = None) -> None:
+        # Сглаживание задаётся только при создании окна — поэтому настройки читаются до него
+        self.settings = settings or Settings.load()
+        if windowed:                                 # ключ командной строки важнее файла, но в файл не пишется
+            self.settings = replace(self.settings, fullscreen=False)
+        super().__init__(1600, 900, "StarRun", fullscreen=False, resizable=True, vsync=True,
+                         update_rate=1 / 120, draw_rate=1 / 120, antialiasing=self.settings.antialiasing)
+        self.draft = self.settings
         self.balance = Balance.load()
         self.seed = seed
         self.biome = biome
@@ -47,6 +57,7 @@ class Game(arcade.Window):
         self.flat = flat                             # прежняя 2D-картинка вместо 3D
         self.cam3 = Camera3D()
         self.scene3d = None if flat else Scene3D(self.ctx)
+        self.postfx = None if flat else PostFX(self.ctx)
         self.world_cam = arcade.Camera2D()
         self.ui_cam = arcade.Camera2D()
         self.vw = 1920.0
@@ -57,6 +68,7 @@ class Game(arcade.Window):
         self.wheel = 0
         self.mouse_screen = (0.0, 0.0)
         self.shake = 0.0
+        self.apply_display()
         self.new_run()
 
     # ---------- забег ----------
@@ -89,6 +101,61 @@ class Game(arcade.Window):
             cam.match_window(projection=False)
             cam.projection = projection
         self.ui_cam.position = (self.vw / 2, H / 2)
+
+    # ---------- настройки экрана ----------
+    def _resolutions(self) -> list[tuple[int, int]]:
+        screen = self.screen or self.display.get_default_screen()
+        return resolutions([(m.width, m.height) for m in screen.get_modes()], (screen.width, screen.height))
+
+    def apply_display(self) -> None:
+        """Разрешение и режим из настроек. Полный экран — режимом монитора; окно — размером в физических
+        пикселях (Windows масштабирует окно на 125 %, поэтому делим на коэффициент)."""
+        s = self.settings
+        screen = self.screen or self.display.get_default_screen()
+        w, h = (s.width, s.height) if s.width and s.height else (screen.width, screen.height)
+        if s.fullscreen:
+            modes = [m for m in screen.get_modes() if (m.width, m.height) == (w, h)]
+            native = (w, h) == (screen.width, screen.height)
+            mode = None if native or not modes else max(modes, key=lambda m: m.rate or 0)
+            self.set_fullscreen(True, screen=screen, mode=mode)
+        else:
+            self.set_fullscreen(False)
+            ratio = self.get_pixel_ratio() or 1.0
+            self.set_size(int(w / ratio), int(h / ratio))
+            self.center_window()
+        self._fit_cameras()
+
+    def open_settings(self) -> None:
+        self.draft = self.settings
+        self.mode = Mode.SETTINGS
+
+    def _setting_rows(self) -> list[SettingRow]:
+        d = self.draft
+        options = self._resolutions()
+        current = (d.width, d.height) if d.width else options[-1]
+        i = options.index(current) if current in options else len(options) - 1
+
+        def res(step: int) -> None:
+            w, h = options[(i + step) % len(options)]
+            self.draft = replace(self.draft, width=w, height=h)
+
+        def flip(field: str) -> None:
+            self.draft = replace(self.draft, **{field: not getattr(self.draft, field)})
+
+        return [SettingRow("Разрешение", f"{current[0]} × {current[1]}", lambda: res(-1), lambda: res(1)),
+                SettingRow("Режим", "полный экран" if d.fullscreen else "окно",
+                           lambda: flip("fullscreen"), lambda: flip("fullscreen")),
+                SettingRow("Сглаживание", "вкл" if d.antialiasing else "выкл",
+                           lambda: flip("antialiasing"), lambda: flip("antialiasing"))]
+
+    def apply_settings(self) -> None:
+        aa_changed = self.draft.antialiasing != self.settings.antialiasing
+        self.settings = self.draft
+        self.settings.save()
+        self.apply_display()
+        if aa_changed:
+            self.hud.notify("Сглаживание изменится после перезапуска игры")
+        self.mode = Mode.PAUSE
 
     def on_resize(self, width: int, height: int) -> None:
         super().on_resize(width, height)
@@ -125,7 +192,7 @@ class Game(arcade.Window):
             if symbol in CHOICE_KEYS and CHOICE_KEYS[symbol] < len(w.offer()):
                 self.choose(CHOICE_KEYS[symbol])
         elif symbol == arcade.key.ESCAPE:
-            self.mode = Mode.PLAY if self.mode is not Mode.PLAY else Mode.PAUSE
+            self.mode = {Mode.PLAY: Mode.PAUSE, Mode.SETTINGS: Mode.PAUSE}.get(self.mode, Mode.PLAY)
         elif symbol == arcade.key.TAB:
             self.mode = Mode.PLAY if self.mode is Mode.STATS else Mode.STATS
         elif symbol == arcade.key.SPACE and self.mode is Mode.PLAY:
@@ -217,8 +284,9 @@ class Game(arcade.Window):
     def on_draw(self) -> None:
         self.clear()
         w = self.world
-        if self.scene3d:
+        if self.scene3d and self.postfx:
             self.scene3d.draw(w, self.cam3, self.scene, self.shapes)
+            self.postfx.apply()              # резкость и контраст — только миру, HUD рисуется поверх
         else:
             with self.world_cam.activate():
                 cx, cy = self.world_cam.position
@@ -231,7 +299,10 @@ class Game(arcade.Window):
             elif w.awaiting_choice:
                 self.hud.level_up(w, self.vw, self.choose)
             elif self.mode is Mode.PAUSE:
-                self.hud.pause(self.vw, self._resume, self.new_run, self.close)
+                self.hud.pause(self.vw, self._resume, self.new_run, self.open_settings, self.close)
+            elif self.mode is Mode.SETTINGS:
+                self.hud.settings(self.vw, self._setting_rows(), self.apply_settings, self._back_to_pause,
+                                  "Разрешение и режим — сразу, сглаживание — после перезапуска")
             elif self.mode is Mode.STATS:
                 self.hud.stats(w, self.vw)
             else:
@@ -239,6 +310,9 @@ class Game(arcade.Window):
 
     def _resume(self) -> None:
         self.mode = Mode.PLAY
+
+    def _back_to_pause(self) -> None:
+        self.mode = Mode.PAUSE
 
 
 def main() -> None:

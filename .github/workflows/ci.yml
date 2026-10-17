@@ -25,7 +25,7 @@ jobs:
         run: uv run ruff check src tests tools
 
       - name: Mypy
-        run: uv run mypy src/starrun/sim src/starrun/balance.py
+        run: uv run mypy src/starrun/sim src/starrun/balance.py src/starrun/settings.py
 
       - name: Tests
         # симуляция не открывает окон и не трогает OpenGL — тесты идут на обычном раннере
