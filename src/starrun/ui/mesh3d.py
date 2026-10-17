@@ -230,6 +230,9 @@ class SkinnedModel:
         self.albedo = load_texture(ctx, Path(f"{stem}_albedo.png"))
         self.mask = load_texture(ctx, Path(f"{stem}_mask.png"))
 
+    def duration(self, clip: str) -> float:
+        return (self.clips[clip].frames - 1) / self.fps
+
     def frames(self, clip: str, time: np.ndarray | float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Кадры A и B и доля B для времени клипа (секунды); петля зацикливается, иначе — стоп на последнем."""
         c = self.clips[clip]

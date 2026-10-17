@@ -34,17 +34,26 @@ EFFECTS_LIFT = 52.0           # пули и пламя — на высоте г�
 CORPSE_LIFE = 4.0
 MARINE_RUN_SPEED = 230.0      # при этой скорости клип бега идёт с родной частотой
 
-# Временное соответствие видов жуков моделям: модель, масштаб от радиуса вида, подсветка, высота полёта
+# Вид жука → модель, радиус вида (px), при котором модель в родном размере (охват ног ≈ 1,35 радиуса),
+# подсветка и высота полёта
 BUG_LOOK = {
     WORKER: ("worker", 20.0, (0, 0, 0, 0), 0.0),
     WARRIOR: ("warrior", 24.0, (0, 0, 0, 0), 0.0),
-    SPITTER: ("worker", 20.0, (0.45, 0.6, 0.12, 0.35), 0.0),
-    FLYER: ("worker", 21.0, (0.85, 0.76, 0.55, 0.35), 55.0),
-    TANKER: ("warrior", 24.0, (0.38, 0.33, 0.28, 0.45), 0.0),
-    BRAIN: ("worker", 20.0, (0.82, 0.45, 0.6, 0.4), 0.0),
-    SEMI_BOSS: ("warrior", 24.0, (0.95, 0.35, 0.15, 0.2), 0.0),
-    QUEEN: ("warrior", 24.0, (0.45, 0.15, 0.38, 0.4), 0.0),
+    SPITTER: ("spitter", 18.5, (0, 0, 0, 0), 0.0),
+    FLYER: ("flyer", 13.0, (0, 0, 0, 0), 55.0),
+    TANKER: ("tanker", 26.0, (0, 0, 0, 0), 0.0),
+    BRAIN: ("brain", 16.0, (0, 0, 0, 0), 0.0),
+    SEMI_BOSS: ("elite", 24.0, (0, 0, 0, 0), 0.0),
+    QUEEN: ("queen", 60.0, (0, 0, 0, 0), 0.0),            # мешок волочится далеко за кругом столкновений
 }
+# Клип удара: играет, пока с удара (сброса отката атаки в симуляции) прошло меньше длины клипа
+ATTACK_CLIP = {"worker": "attack", "warrior": "strike", "spitter": "attack", "flyer": "attack", "tanker": "attack",
+               "elite": "strike"}
+WINDUP = (WARRIOR, SPITTER)       # замах по сигналу симуляции (sw.windup)
+# Боссы: клип по таймерам симуляции — (клип, таймер, период из настроек вида); с события прошло период − таймер
+BOSS_CLIPS = {QUEEN: (("attack", "timer_a", "volley_every"), ("summon", "timer_b", "summon_every")),
+              SEMI_BOSS: (("windup", "timer_b", "summon_every"),)}
+FALL_TIME = 0.5                   # убитый летающий падает на землю
 
 
 def tree_mesh(kind: str, color: tuple[int, int, int]) -> list[M.Part]:
@@ -86,6 +95,7 @@ class Corpse:
     model: str
     scale: float
     tint: tuple[float, float, float, float]
+    lift: float = 0.0
     age: float = 0.0
 
 
@@ -97,7 +107,8 @@ class Scene3D:
         self.static = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.STATIC_FS)
         self.static_depth = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.DEPTH_FS)
         self.receiver = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=M.RECEIVER_FS)
-        self.models = {n: M.SkinnedModel(ctx, MODELS / f"{n}.npz") for n in ("marine", "worker", "warrior")}
+        names = {"marine"} | {look[0] for look in BUG_LOOK.values()}
+        self.models = {n: M.SkinnedModel(ctx, MODELS / f"{n}.npz") for n in sorted(names)}
         self.trees: dict[tuple[str, tuple[int, int, int]], M.StaticMesh] = {}
         wall, glass, door = (0.36, 0.37, 0.39), (0.42, 0.62, 0.7), (0.42, 0.29, 0.18)
         self.props = {
@@ -143,10 +154,10 @@ class Scene3D:
         if self.prev_alive is not None:
             died = np.flatnonzero(self.prev_alive & ~sw.alive)
             for i in died[:60]:
-                name, r0, tint, _ = BUG_LOOK[int(sw.kind[i])]
+                name, r0, tint, lift = BUG_LOOK[int(sw.kind[i])]
                 to = world.player.pos - sw.pos[i]
                 self.corpses.append(Corpse(sw.pos[i].copy(), math.atan2(to[1], to[0]) - math.pi / 2, name,
-                                           float(sw.radius[i]) / r0, tint))
+                                           float(sw.radius[i]) / r0, tint, lift))
         self.prev_alive = sw.alive.copy()
         for c in self.corpses:
             c.age += dt
@@ -370,7 +381,7 @@ class Scene3D:
         # жуки
         sw = world.swarm
         idx = sw.alive_idx
-        groups: dict[str, list[np.ndarray]] = {"worker": [], "warrior": []}
+        groups: dict[str, list[np.ndarray]] = {look[0]: [] for look in BUG_LOOK.values()}
         if len(idx):
             kind = sw.kind[idx]
             to = p.pos - sw.pos[idx]
@@ -383,12 +394,27 @@ class Scene3D:
                 model = self.models[name]
                 time = self.time * sw.speed[ii] / 100.0 + ii * 0.37
                 clip_a, clip_b, frac = model.frames("run", time)
-                if k == WARRIOR:                               # замах по сигналу симуляции
+                cfg = sw.cfg[k]
+                hit = ATTACK_CLIP.get(name)
+                if hit:
+                    since = cfg.attack_cooldown - sw.cooldown[ii]
+                    a = (since >= 0) & (since < model.duration(hit))
+                    if a.any():
+                        clip_a[a], clip_b[a], frac[a] = model.frames(hit, since[a])
+                for clip, timer, period in BOSS_CLIPS.get(k, ()):
+                    since = getattr(cfg, period) - getattr(sw, timer)[ii]
+                    a = (since >= 0) & (since < model.duration(clip))
+                    if a.any():
+                        clip_a[a], clip_b[a], frac[a] = model.frames(clip, since[a])
+                if k == SEMI_BOSS:                             # рывок — бег вдвое быстрее
+                    d = sw.dash[ii] > 0
+                    if d.any():
+                        clip_a[d], clip_b[d], frac[d] = model.frames("run", time[d] * 2.5)
+                if k in WINDUP:                                # замах: доля пройденного замаха → весь клип
                     w = sw.windup[ii] >= 0
                     if w.any():
-                        cfg = sw.cfg[WARRIOR]
-                        wa, wb, wf = model.frames("windup", (cfg.windup - sw.windup[ii[w]]) / cfg.windup * 0.8)
-                        clip_a[w], clip_b[w], frac[w] = wa, wb, wf
+                        done = (cfg.windup - sw.windup[ii[w]]) / cfg.windup
+                        clip_a[w], clip_b[w], frac[w] = model.frames("windup", done * model.duration("windup"))
                 stunned = sw.stun[ii] > 0
                 if stunned.any():
                     sa, sb, sf = model.frames("idle", self.time + ii[stunned])
@@ -408,7 +434,7 @@ class Scene3D:
         for c in self.corpses:
             model = self.models[c.model]
             da, db, df = model.frames("die", c.age)
-            sink = -max(0.0, c.age - 2.5) * 12
+            sink = -max(0.0, c.age - 2.5) * 12 + c.lift * max(0.0, 1 - c.age / FALL_TIME) ** 2
             groups[c.model].append(np.array([[c.pos[0], c.pos[1], sink, c.yaw, da, db, df, c.scale, *c.tint]],
                                             np.float32))
         for name, parts in groups.items():

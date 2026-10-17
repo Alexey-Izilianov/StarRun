@@ -164,11 +164,13 @@ class RigModel(Model):
                     basis = (rest[b.parent.name].inverted() @ rest[b.name]).inverted() @ Pp.inverted() @ Pb
                 else:
                     basis = rest[b.name].inverted() @ Pb
-                loc, rot, _ = basis.decompose()
+                loc, rot, scale = basis.decompose()        # масштаб — раздувание мешков (стрелок, королева)
                 pb.location = loc
                 pb.rotation_quaternion = rot
+                pb.scale = scale
                 pb.keyframe_insert("location", frame=f)
                 pb.keyframe_insert("rotation_quaternion", frame=f)
+                pb.keyframe_insert("scale", frame=f)
         act.use_frame_range = True
         act.frame_start, act.frame_end = 0, frames
         act.use_cyclic = loop
@@ -207,6 +209,7 @@ class RigModel(Model):
             pb.rotation_euler = (0, 0, 0)
             pb.rotation_quaternion = (1, 0, 0, 0)
             pb.location = (0, 0, 0)
+            pb.scale = (1, 1, 1)
 
 
 # ---------- типовые анимации пехоты ----------

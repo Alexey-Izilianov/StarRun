@@ -282,11 +282,12 @@ WARRIOR_JOINTS = {"root": ((0, 0, 0), None), "body": ((0, 0.0, 0.62), "root"), "
 WARRIOR_JOINTS.update(leg_joints(WARRIOR_LEGS))
 
 
-def warrior():
-    m = Bug("warrior", WARRIOR_JOINTS, WARRIOR_LEGS, 512 if FAST else 1024)
+def warrior(name="warrior", keys=("red_chitin", "red_chitin_dk", "red_chitin_lt"), elite=False):
+    """Воин; elite — полубосс «Элитный воин»: та же стать и клипы, но в броне — рога, наплечники, щитки на лапах."""
+    m = Bug(name, WARRIOR_JOINTS, WARRIOR_LEGS, 512 if FAST else 1024)
     m.camo_scale = 7.0
-    m.decimate = 0.3
-    C, Cd, Cl = "red_chitin", "red_chitin_dk", "red_chitin_lt"
+    m.decimate = 0.3 if not elite else 0.6
+    C, Cd, Cl = keys
     # грудь — вытянутый щит, по хребту — шипы назад
     carapace(m, C, Cd, Cl, (0, 0.05, 0.64), (0.17, 0.27, 0.13), "body")
     m.sphere("belly", 1.0, (0, 0.05, 0.56), scale=(0.13, 0.22, 0.07), group="body", seg=14, rings=6)
@@ -331,11 +332,37 @@ def warrior():
                 up=(s, 0, 0), group="blade." + S)
     for leg, (H, K, F) in WARRIOR_LEGS.items():
         build_leg(m, leg, H, K, F, C, Cd, 0.044, 0.035)
+    if elite:
+        elite_armor(m, C, Cd, Cl)
     m.build()
     m.bake(samples=8 if FAST else 64)
     warrior_actions(m)
     export.export(m)
     return m
+
+
+def elite_armor(m, C, Cd, Cl):
+    for s in (-1, 1):
+        S = "R" if s > 0 else "L"
+        # наплечник: щиток над основанием лапы с тремя шипами наружу
+        m.plate(Cl, (s * 0.14, 0.18, 0.66), (0.14, 0.13, 0.1), (R(90 - 90 * s - 60), R(90 - 90 * s + 60)),
+                (R(-5), R(70)), 0.025, group="body", res=(10, 5))
+        for i in range(3):
+            base = Vector((s * (0.2 + 0.03 * i), 0.24 - 0.07 * i, 0.72))
+            m.sweep("claw", curve([base, base + Vector((s * 0.07, -0.03, 0.06)), base + Vector((s * 0.12, -0.08, 0.08))], 4),
+                    oval(6), taper(0.024, 0.0), group="body")
+        # рога: от затылка назад-вверх, по сторонам гребня
+        m.sweep("claw", curve([(s * 0.07, 0.44, 0.7), (s * 0.13, 0.32, 0.86), (s * 0.12, 0.14, 0.98)], 8), oval(8),
+                taper(0.035, 0.0), group="head")
+        # щиток на плече лапы-серпа
+        sh, el = Vector((s * 0.14, 0.24, 0.62)), Vector((s * 0.3, 0.46, 0.92))
+        m.sweep(Cl, [sh.lerp(el, 0.2) + Vector((s * 0.03, 0, 0.03)), sh.lerp(el, 0.85) + Vector((s * 0.03, 0, 0.03))],
+                LENS, 0.05, 0.03, up=(s, 0, 1), group="arm." + S)
+    for i, y in enumerate((-0.3, -0.45, -0.6)):              # пары шипов по брюшку, по сторонам от гребня
+        for s in (-1, 1):
+            base = Vector((s * 0.08, y, 0.81))
+            m.sweep("claw", curve([base, base + Vector((s * 0.04, -0.05, 0.09)), base + Vector((s * 0.06, -0.12, 0.13))], 4),
+                    oval(6), taper(0.03, 0.0), group="abdomen")
 
 
 def scythes(m, lift, spread=0.0):
