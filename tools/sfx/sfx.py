@@ -1,5 +1,6 @@
 """Звуки StarRun синтезом, без чужих записей: выстрелы, взрывы, жуки, десантник, находки, фон биомов и фразы
-десантника (голос Windows «Microsoft Pavel», обработанный как рация). Результат — assets/sounds/*.wav.
+десантника (Piper dmitri, запасной — Windows «Microsoft Pavel», обработка как рация).
+Результат — assets/sounds/*.wav.
 
 Приёмы: фильтр — умножение спектра (FFT) на плавную полосу; хвост — свёртка с затухающим шумом (отзвук);
 вариации одного звука — другое зерно шума и чуть другой тон. Фоновые петли сшиты перекрёстным затуханием.
@@ -308,6 +309,27 @@ def marine() -> None:
     write("dropship", mix(d, (rumble, 1.0), (whine, 1.0), (band(noise(d), 1500, 5000) * 0.2, 1.0)), 0.75)
 
 
+def footsteps() -> None:
+    """Ботинки: удар пятки и перекат; по три варианта грунта, песка, топи, досок и металла."""
+    for surface in ("ground", "sand", "mud", "wood", "metal"):
+        for v in range(3):
+            d = 0.24
+            thud = tone(sweep(rng.uniform(110, 140), 45, d), d) * env(d, 0.002, 0.025)
+            grit = band(noise(d), 600, 6000) * env(d, 0.004, 0.045)
+            heel = mix(d, (thud, 0.8), (grit, 0.35))
+            if surface == "sand":
+                heel = band(noise(d), 700, 4800) * env(d, 0.01, 0.055) + 0.25 * thud
+            elif surface == "mud":
+                squelch = tone(sweep(380, 80, d), d) * env(d, 0.01, 0.045)
+                heel = 0.6 * thud + 0.5 * squelch + band(noise(d), 150, 1800) * env(d, 0.005, 0.06)
+            elif surface == "wood":
+                heel = 0.6 * thud + ring(d, (240, 510, 940), 0.045) * 0.45 + 0.1 * grit
+            elif surface == "metal":
+                heel = 0.5 * thud + ring(d, (720, 1230, 2140), 0.07) * 0.3 + 0.15 * grit
+            roll = at(band(noise(d), 400, 2400) * env(d, 0.006, 0.025), 0.075, d)
+            write(f"step_{surface}_{v}", heel + 0.15 * roll, 0.5)
+
+
 # ---------------------------------------------------------------------------------------------- фон биомов
 
 AMB_SR = 22050
@@ -446,8 +468,8 @@ def voice() -> None:
             write(f"voice_{name}", radio(raw, VOICE_SR), 0.85, VOICE_SR)
 
 
-GROUPS = {"weapons": weapons, "explosions": explosions, "bugs": bugs, "marine": marine, "ambients": ambients,
-          "voice": voice}
+GROUPS = {"weapons": weapons, "explosions": explosions, "bugs": bugs, "marine": marine, "footsteps": footsteps,
+          "ambients": ambients, "voice": voice}
 
 if __name__ == "__main__":
     for name in sys.argv[1:] or list(GROUPS):

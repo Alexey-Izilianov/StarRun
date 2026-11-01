@@ -133,9 +133,12 @@ class Mar(Weapon):
         angles = np.arctan2(aim[1], aim[0]) + np.radians(world.rng.normal(0, self.cfg.spread_deg / 2, shots))
         dirs = np.stack([np.cos(angles), np.sin(angles)], 1).astype(np.float32)
         damage = np.full(shots, self.damage(world), np.float32)
-        damage[world.rng.random(shots) < stats["mar_crit"]] *= 2
+        critical = world.rng.random(shots) < stats["mar_crit"]
+        damage[critical] *= 2
         world.bullets.fire(self.muzzle(world, dirs[0]), dirs, self.cfg.bullet_speed, damage,
-                           self.reach(world) / self.cfg.bullet_speed, pierce=int(stats["mar_pierce"]))
+                           self.reach(world) / self.cfg.bullet_speed, pierce=int(stats["mar_pierce"]),
+                           ricochet=(int(stats["mar_ricochet"]), self.cfg.ricochet_range, self.cfg.ricochet_damage),
+                           critical=critical)
 
 
 class Shotgun(Weapon):
@@ -166,7 +169,7 @@ class Sniper(Weapon):
         pierce = RAIL_PIERCE if self.mod else c.pierce + int(self.stat(world, "pierce"))
         dirs = np.repeat(d[None], shots, 0)
         world.bullets.fire(self.muzzle(world, d), dirs, speed, self.damage(world), self.reach(world) / speed,
-                           pierce=pierce, kind=SNIPER)
+                           pierce=pierce, kind=SNIPER, armor_pierce=self.stat(world, "armor_pierce") > 0)
 
 
 class Flame(Weapon):
@@ -209,10 +212,13 @@ class Rocket(Weapon):
         d = unit(target - p)
         dist = min(float(np.linalg.norm(target - p)), self.reach(world))
         cluster = (c.mod_count, c.mod_damage * world.stats["damage_mult"], c.mod_radius) if self.mod else (0, 0.0, 0.0)
+        fire = ((c.field_time, c.field_dps * world.stats["damage_mult"],
+                 c.radius * self.stat(world, "radius") * c.field_radius_share)
+                if self.stat(world, "fire") > 0 else (0.0, 0.0, 0.0))
         dirs = np.repeat(d[None], shots, 0)
         world.bullets.fire(self.muzzle(world, d), dirs, c.bullet_speed, self.damage(world), dist / c.bullet_speed,
                            kind=ROCKET, blast=c.radius * self.stat(world, "radius"), knock=c.knockback,
-                           cluster=cluster)
+                           cluster=cluster, fire=fire)
 
 
 class Turret(Weapon):
@@ -346,5 +352,5 @@ class Fires:
             self.life[i] -= dt
             caught = world.swarm.in_radius(self.pos[i], self.radius[i])
             if len(caught):
-                world.deal(caught, np.full(len(caught), self.dps[i] * dt, np.float32), armor=False)
+                world.deal(caught, np.full(len(caught), self.dps[i] * dt, np.float32), armor=False, feedback=False)
 

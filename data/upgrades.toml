@@ -280,6 +280,48 @@ mode = "mult"
 group = "weapon"
 weapon = "rocket"
 
+# ---------- поведение оружия ----------
+# Фиксированный эффект независимо от редкости.
+
+[[upgrade]]
+id = "mar_ricochet"
+name = "MAR: рикошетный сердечник"
+text = "После пробития пуля перенаводится на видимого жука в 220 px. Каждый отскок сохраняет 65 % урона"
+stat = "mar_ricochet"
+mode = "add"
+value = 1
+integer = true
+fixed = true
+max_rank = 2
+group = "weapon"
+weapon = "mar"
+
+[[upgrade]]
+id = "sniper_armor_pierce"
+name = "Снайперка: вольфрамовый сердечник"
+text = "Пуля игнорирует броню и раскалывает панцирь цели для всего оружия. Пробитие и рельса сохраняются"
+stat = "sniper_armor_pierce"
+mode = "add"
+value = 1
+integer = true
+fixed = true
+max_rank = 1
+group = "weapon"
+weapon = "sniper"
+
+[[upgrade]]
+id = "rocket_fire"
+name = "Ракетница: термобарический заряд"
+text = "Главный взрыв оставляет горящее поле на 2,5 с. Кассетные заряды сохраняются"
+stat = "rocket_fire"
+mode = "add"
+value = 1
+integer = true
+fixed = true
+max_rank = 1
+group = "weapon"
+weapon = "rocket"
+
 # ---------- мини-турель ----------
 
 [[upgrade]]

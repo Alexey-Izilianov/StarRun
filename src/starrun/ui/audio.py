@@ -19,10 +19,13 @@ import numpy as np
 
 from starrun.settings import Settings
 from starrun.sim.combat import BULLET, GRENADE, PELLET, ROCKET, SNIPER, TURRET_SHOT
+from starrun.sim.terrain import BRIDGE, DOOR, FLOOR, MUD, OPEN_DOOR, SAND
 from starrun.sim.world import World
 
 SOUNDS = Path(__file__).resolve().parents[3] / "assets" / "sounds"
 HEARING = 1100.0              # px: дальше — звук на минимальной громкости
+STEP_DISTANCE = 72.0         # px пути между шагами: бег чаще, топь и песок реже
+STEP_SURFACES = ("ground", "sand", "mud", "wood", "metal")
 SHOT_SOUND = {BULLET: "mar", PELLET: "shotgun", SNIPER: "sniper", ROCKET: "rocket_launch", GRENADE: "grenade_launch"}
 # Событие мира → звук и его громкость (позиции у этих событий нет — звучат «рядом»)
 EVENT_SOUNDS = {
@@ -86,6 +89,8 @@ class Audio:
         self.gem_streak = 0.0
         self.kills_said = 0
         self.contact_said = False
+        self.step_pos = world.player.pos.copy() if world is not None else None
+        self.step_distance = 0.0
         self.biome = world.biome or "" if world is not None else ""       # id биома: фон amb_<id>
         self.tree = world.terrain.biome.tree if world is not None and world.terrain is not None else ""
         if world is not None:
@@ -161,6 +166,8 @@ class Audio:
         if self.voice.queue and self.time >= self.voice.busy_until:
             self.say(self.voice.queue.pop(0))
         if paused:
+            self.step_pos = world.player.pos.copy()
+            self.step_distance = 0.0
             for loop in self.loops.values():
                 loop.target = 0.0
         else:
@@ -168,6 +175,7 @@ class Audio:
             self._deaths(world)
             self._gems(world)
             self._marine(world)
+            self._footsteps(world)
             self._loop_targets(world)
         self._loops(dt)
 
@@ -231,6 +239,33 @@ class Audio:
             self.prev_reload = left
         if p.hp < 0.3 * world.stats["max_hp"]:
             self.say("medkit")
+
+    def _footsteps(self, world: World) -> None:
+        """Шаги по пройденному пути после столкновений: упор в стену и рубка молчат."""
+        p = world.player
+        distance = 0.0 if self.step_pos is None else float(np.linalg.norm(p.pos - self.step_pos))
+        self.step_pos = p.pos.copy()
+        # Перенос в новый мир / отладочный телепорт не должен давать очередь шагов.
+        if distance < 0.01 or distance > STEP_DISTANCE * 2 or p.vaulting or world.session.over:
+            self.step_distance = 0.0
+            return
+        self.step_distance += distance
+        if self.step_distance < STEP_DISTANCE:
+            return
+        self.step_distance %= STEP_DISTANCE
+        surface = "sand" if world.biome == "desert" else "ground"
+        t = world.terrain
+        if t is not None:
+            kind, soil = int(t.kinds_at(p.pos)[0]), int(t.soil_at(p.pos)[0])
+            if kind == BRIDGE:
+                surface = "wood"
+            elif kind in (FLOOR, DOOR, OPEN_DOOR):
+                surface = "metal"
+            elif soil == MUD:
+                surface = "mud"
+            elif soil == SAND:
+                surface = "sand"
+        self.play(f"step_{surface}", 0.45 if p.sprinting else 0.32, pitch=0.08)
 
     # ---------- петли ----------
     def _loop_targets(self, world: World) -> None:

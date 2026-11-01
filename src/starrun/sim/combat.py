@@ -27,6 +27,20 @@ class Explosion:
     cluster: int = 0            # сколько малых зарядов разлетится (кассета)
     cluster_damage: float = 0.0
     cluster_radius: float = 0.0
+    fire_time: float = 0.0
+    fire_dps: float = 0.0
+    fire_radius: float = 0.0
+
+
+@dataclass(frozen=True)
+class HitFeedback:
+    """Ограниченное событие для рендера, со снимком позиции/вида до переиспользования слота жука."""
+
+    pos: np.ndarray
+    damage: float
+    armored: bool
+    critical: bool = False
+    kind: int = -1
 
 
 @dataclass
@@ -39,6 +53,8 @@ class Impacts:
     burn_time: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
     burn_dps: np.ndarray = field(default_factory=lambda: np.empty(0, np.float32))
     explosions: list[Explosion] = field(default_factory=list)
+    armor_pierce: np.ndarray = field(default_factory=lambda: np.empty(0, bool))
+    critical: np.ndarray = field(default_factory=lambda: np.empty(0, bool))
 
 
 class Bullets:
@@ -57,11 +73,24 @@ class Bullets:
         self.cluster = np.zeros(capacity, np.int8)
         self.cluster_damage = np.zeros(capacity, np.float32)
         self.cluster_radius = np.zeros(capacity, np.float32)
+        self.ricochet = np.zeros(capacity, np.int8)
+        self.ricochet_range = np.zeros(capacity, np.float32)
+        self.ricochet_damage = np.ones(capacity, np.float32)
+        self.history = np.full((capacity, 32), -1, np.int32)  # MAR: до 16 сквозных попаданий + 2 рикошета
+        self.hit_count = np.zeros(capacity, np.int16)
+        self.redirected = np.zeros(capacity, bool)
+        self.armor_pierce = np.zeros(capacity, bool)
+        self.critical = np.zeros(capacity, bool)
+        self.fire_time = np.zeros(capacity, np.float32)
+        self.fire_dps = np.zeros(capacity, np.float32)
+        self.fire_radius = np.zeros(capacity, np.float32)
         self.alive = np.zeros(capacity, bool)
 
     def fire(self, origin: np.ndarray, directions: np.ndarray, speed: float, damage: np.ndarray | float,
              life: float, *, pierce: int = 0, kind: int = BULLET, blast: float = 0.0, knock: float = 0.0,
-             burn: tuple[float, float] = (0.0, 0.0), cluster: tuple[int, float, float] = (0, 0.0, 0.0)) -> None:
+             burn: tuple[float, float] = (0.0, 0.0), cluster: tuple[int, float, float] = (0, 0.0, 0.0),
+             ricochet: tuple[int, float, float] = (0, 0.0, 1.0), armor_pierce: bool = False,
+             critical: np.ndarray | bool = False, fire: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> None:
         free = np.flatnonzero(~self.alive)[: len(directions)]
         n = len(free)
         self.pos[free] = origin
@@ -75,13 +104,22 @@ class Bullets:
         self.knock[free] = knock
         self.burn_time[free], self.burn_dps[free] = burn
         self.cluster[free], self.cluster_damage[free], self.cluster_radius[free] = cluster
+        self.ricochet[free], self.ricochet_range[free], self.ricochet_damage[free] = ricochet
+        self.history[free] = -1
+        self.hit_count[free] = 0
+        self.redirected[free] = False
+        self.armor_pierce[free] = armor_pierce
+        self.critical[free] = np.broadcast_to(np.asarray(critical, bool), (len(directions),))[:n]
+        self.fire_time[free], self.fire_dps[free], self.fire_radius[free] = fire
         self.alive[free] = True
 
     def _explode(self, b: np.ndarray, out: Impacts) -> None:
         for i in b:
             out.explosions.append(Explosion(self.pos[i].copy(), float(self.blast[i]), float(self.damage[i]),
                                             float(self.knock[i]), int(self.cluster[i]),
-                                            float(self.cluster_damage[i]), float(self.cluster_radius[i])))
+                                            float(self.cluster_damage[i]), float(self.cluster_radius[i]),
+                                            float(self.fire_time[i]), float(self.fire_dps[i]),
+                                            float(self.fire_radius[i])))
         self.alive[b] = False
 
     def step(self, dt: float, swarm: Swarm, terrain: Terrain | None = None) -> Impacts:
@@ -112,6 +150,13 @@ class Bullets:
             d2 = ((rel - seg * t[..., None]) ** 2).sum(-1)
             hit = d2 < (swarm.radius[bugs][None, :] + BULLET_RADIUS) ** 2
             hit &= bugs[None, :] != self.last_hit[b][:, None]
+            redirected = np.flatnonzero(self.redirected[b])
+            if len(redirected):
+                # На обратном пути пуля может пересечь прежнюю цель, не выбирая её для перенаведения.
+                # Проверяем историю только геометрически попавших пар, без большой матрицы B×N×history.
+                rows, cols = np.nonzero(hit[redirected])
+                repeated = (self.history[b[redirected[rows]]] == bugs[cols, None]).any(1)
+                hit[redirected[rows[repeated]], cols[repeated]] = False
             hit &= t < wall[:, None]  # жук за деревом не задет
             any_hit = hit.any(1)
         # В стену — без попадания в жука: снаряд гаснет там, взрывной рвётся
@@ -136,10 +181,42 @@ class Bullets:
         out.knock = self.vel[hb] / speed * self.knock[hb, None]
         out.burn_time = self.burn_time[hb].copy()
         out.burn_dps = self.burn_dps[hb].copy()
+        out.armor_pierce = self.armor_pierce[hb].copy()
+        out.critical = self.critical[hb].copy()
         self.last_hit[hb] = bug
+        self.history[hb, np.minimum(self.hit_count[hb], self.history.shape[1] - 1)] = bug
+        self.hit_count[hb] += 1
         self.pierce[hb] -= 1
         self.alive[hb] &= self.pierce[hb] >= 0
+        for i in hb[(self.ricochet[hb] > 0) & ~self.alive[hb]]:
+            self._ricochet(int(i), swarm, terrain)
         return out
+
+    def _ricochet(self, i: int, swarm: Swarm, terrain: Terrain | None) -> None:
+        """Редкий цикл по попавшим пулям; цели ищутся массивом, уже задетые не повторяются."""
+        near = swarm.in_radius(self.pos[i], float(self.ricochet_range[i]))
+        near = near[(swarm.hp[near] > 0) & ~np.isin(near, self.history[i])]
+        if not len(near):
+            return
+        if terrain is not None:
+            count = max(2, int(np.ceil(float(self.ricochet_range[i]) / (terrain.cell / 2))))
+            points = self.pos[i] + (swarm.pos[near] - self.pos[i])[:, None, :] * np.linspace(
+                0, 1, count + 1, dtype=np.float32)[None, 1:-1, None]
+            near = near[~terrain.shot_blocked(points.reshape(-1, 2)).reshape(len(near), -1).any(1)]
+        if not len(near):
+            return
+        delta = swarm.pos[near] - self.pos[i]
+        dist2 = (delta * delta).sum(1)
+        target = int(np.argmin(dist2))
+        distance = float(np.sqrt(dist2[target]))
+        speed = float(np.linalg.norm(self.vel[i]))
+        self.vel[i] = delta[target] / max(distance, 1e-6) * speed
+        self.damage[i] *= self.ricochet_damage[i]
+        self.life[i] = max(float(self.life[i]), distance / max(speed, 1.0) + 0.1)
+        self.ricochet[i] -= 1
+        self.redirected[i] = True
+        self.pierce[i] = 0
+        self.alive[i] = True
 
 
 class Acid:

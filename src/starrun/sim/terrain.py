@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -108,6 +109,7 @@ class Terrain:
         self.size_px = n * cfg.cell
         self.kind = np.zeros((n, n), np.uint8)
         self.soil = np.zeros((n, n), np.uint8)
+        self.paths = np.zeros((n, n), bool)
         self.hp = np.zeros((n, n), np.float32)
         self.building = np.full((n, n), -1, np.int16)
         self.buildings: list[Building] = []
@@ -147,7 +149,52 @@ class Terrain:
         border = self.cfg.border
         self.kind[:border, :] = self.kind[-border:, :] = ROCK
         self.kind[:, :border] = self.kind[:, -border:] = ROCK
+        self._colony_paths()
         self._scatter_items()
+
+    def _colony_paths(self) -> None:
+        """Тропы от поляны к входам: обход воды/стен, лес по дороге расчищается."""
+        if not self.doors:
+            return
+        n = self.n
+        start = (n // 2, n // 2)
+        costs = np.full((n, n), np.inf)
+        costs[start[1], start[0]] = 0
+        parent: dict[tuple[int, int], tuple[int, int]] = {}
+        queue = [(0.0, *start)]
+        goals = {int(self.building[y, x]) for x, y in self.doors}
+        endpoints = []
+        blocked = np.isin(self.kind, (WALL, WATER, ROCK, FENCE, WINDOW))
+        while queue and goals:
+            cost, x, y = heapq.heappop(queue)
+            if cost != costs[y, x]:
+                continue
+            bid = int(self.building[y, x])
+            if self.kind[y, x] in (DOOR, OPEN_DOOR) and bid in goals:
+                goals.remove(bid)
+                endpoints.append((x, y))
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                xx, yy = x + dx, y + dy
+                if not (0 <= xx < n and 0 <= yy < n) or blocked[yy, xx]:
+                    continue
+                extra = 3.0 if self.kind[yy, xx] == TREE else 1.0
+                extra += 2.0 if self.soil[yy, xx] == SAND else 0.0
+                new = cost + extra
+                if new < costs[yy, xx]:
+                    costs[yy, xx] = new
+                    parent[(xx, yy)] = (x, y)
+                    heapq.heappush(queue, (new, xx, yy))
+        for end in endpoints:
+            p = end
+            while p != start:
+                x, y = p
+                self.paths[y, x] = True
+                p = parent[p]
+        self.paths[start[1], start[0]] = True
+        clear = dilate8(self.paths) & np.isin(self.kind, (GROUND, TREE, STUMP))
+        self.kind[clear] = GROUND
+        self.hp[clear] = 0
+        self.soil[clear] = PLAIN
 
     def _free_spot(self, margin: int, avoid_center: int) -> tuple[int, int]:
         n, c = self.n, self.n // 2

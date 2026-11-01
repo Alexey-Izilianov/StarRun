@@ -129,8 +129,8 @@ def torso(m):
         for i in range(k * 4):
             a = TAU * i / (k * 4)
             c, s = math.cos(a), math.sin(a)
-            x = math.copysign(abs(c) ** 0.55, c) * w              # суперэллипс: прямые бока, скруглённые углы
-            y = math.copysign(abs(s) ** 0.55, s) * d + (fwd if s > 0 else 0) * s
+            x = math.copysign(abs(c) ** 0.85, c) * w              # органичная грудная клетка под разгрузкой
+            y = math.copysign(abs(s) ** 0.85, s) * d + (fwd if s > 0 else 0) * s
             pts.append((x, y, z))
         return pts
     rings = [sect(1.22, 0.17, 0.12, 0.0), sect(1.26, 0.19, 0.127, 0.008), sect(1.31, 0.212, 0.134, 0.02),
@@ -245,12 +245,11 @@ def helmet(m):
     m.sphere("armor", 0.13, (0, 0.0, 1.72), scale=(1, 1.12, 0.97), group=Hd, seg=36, rings=18)
     m.plate("armor_dk", (0, 0.0, 1.67), (0.135, 0.15, 0.125), around(270, 115), (R(-20), R(8)), 0.025, group=Hd, res=(24, 4))
     m.plate("armor", (0, -0.01, 1.66), (0.14, 0.155, 0.12), around(270, 70), (R(-48), R(-14)), 0.02, group=Hd, res=(16, 4))
-    m.box("armor", (0.035, 0.27, 0.035), (0, -0.01, 1.84), group=Hd, bevel=0.014, seg=3, top=(0.6, 0.9))      # гребень
-    m.box("sand", (0.018, 0.15, 0.01), (0, 0.03, 1.858), group=Hd, bevel=0.003)
+    m.box("strap", (0.026, 0.19, 0.008), (0, -0.01, 1.845), group=Hd, bevel=0.003, seg=2)  # крепление чехла
     # лицевой щиток в оправе с болтами, полоса подсветки
     m.plate("armor_dk", (0, 0.0, 1.7), (0.134, 0.147, 0.125), around(90, 62), (R(-22), R(16)), 0.025, group=Hd, res=(24, 6))
     m.plate("visor", (0, 0.003, 1.7), (0.134, 0.148, 0.126), around(90, 52), (R(-14), R(11)), 0.01, group=Hd, res=(20, 6))
-    m.plate("optic", (0, 0.003, 1.7), (0.135, 0.149, 0.127), around(90, 46), (R(-13), R(-10)), 0.005, group=Hd, res=(16, 1))
+    m.plate("metal", (0, 0.003, 1.7), (0.135, 0.149, 0.127), around(90, 46), (R(-13), R(-11)), 0.003, group=Hd, res=(16, 1))
     for a in (R(90 - 58), R(90 + 58)):
         m.sphere("metal", 0.009, (0.134 * math.cos(a), 0.15 * math.sin(a), 1.7), group=Hd, seg=8, rings=5)
     # дыхательная маска с фильтрами, нащёчники
@@ -273,3 +272,27 @@ def helmet(m):
     m.box("armor_dk", (0.028, 0.055, 0.028), (0.135, 0.06, 1.74), group=Hd, bevel=0.008)
     m.cyl("light", 0.009, 0.005, (0.135, 0.09, 1.74), FWD, group=Hd, seg=10, bevel=0.0)
     m.cyl("gunmetal", 0.005, 0.2, (-0.125, -0.05, 1.8), rot=(R(-12), 0, 0), group=Hd, seg=6, bevel=0.0)
+
+
+def field_details(m, P):
+    """Ткань и экипировка связывают бронепластины в человеческий силуэт."""
+    for side, sign in (("L", -1), ("R", 1)):
+        # Мягкие складки у коленей: поперечные валики ткани под пластинами.
+        for k in range(3):
+            z = 0.59 + k * 0.024
+            band(m, "suit", (0.11 * sign, 0.015, z), (0.076 - k * 0.003, 0.079, 0.018),
+                 0.008, 0.004, "thigh." + side, res=20)
+        for k in range(3):
+            a = Vector(P("upperarm." + side)).lerp(Vector(P("forearm." + side)), 0.62 + k * 0.09)
+            m.sphere("suit", 0.052, tuple(a), scale=(1.03, 1.05, 0.22), group="upperarm." + side, seg=20, rings=8)
+        # Швы брюк и лямки на спине читаются крупными спокойными линиями.
+        m.seam((sign * 0.168, 0.005, 0.65), (sign * 0.164, 0.005, 0.89), (sign, 0, 0),
+               group="thigh." + side, key="strap", width=0.005)
+        m.box("strap", (0.026, 0.02, 0.25), (sign * 0.145, -0.145, 1.39), rot=(0, R(sign * 8), 0),
+              group="chest", bevel=0.006, seg=2)
+    # Радиостанция на левом плече, гибкий кабель и неброская маркировка отделения.
+    m.box("gunmetal", (0.048, 0.032, 0.07), (-0.15, 0.14, 1.49), group="chest", bevel=0.01, seg=3)
+    m.sweep("rubber", curve([(-0.15, 0.14, 1.52), (-0.18, 0.11, 1.57), (-0.17, -0.04, 1.53)], 12),
+            oval(10), 0.006, group="chest")
+    for x in (-0.05, 0.0, 0.05):
+        m.box("white", (0.027, 0.004, 0.011), (x, 0.211, 1.47), group="chest", bevel=0.001)

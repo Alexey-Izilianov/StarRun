@@ -29,8 +29,29 @@ uniform float u_contrast;
 uniform float u_saturation;
 in vec2 v_uv;
 out vec4 f_color;
+vec3 antialiased(vec2 uv) {
+    vec3 center = texture(u_img, uv).rgb;
+    vec3 nw = texture(u_img, uv + vec2(-1, 1) * u_texel).rgb;
+    vec3 ne = texture(u_img, uv + vec2(1, 1) * u_texel).rgb;
+    vec3 sw = texture(u_img, uv + vec2(-1, -1) * u_texel).rgb;
+    vec3 se = texture(u_img, uv + vec2(1, -1) * u_texel).rgb;
+    vec3 weights = vec3(0.299, 0.587, 0.114);
+    float m = dot(center, weights);
+    float a = dot(nw, weights), b = dot(ne, weights);
+    float c = dot(sw, weights), d = dot(se, weights);
+    float lo = min(m, min(min(a, b), min(c, d)));
+    float hi = max(m, max(max(a, b), max(c, d)));
+    if (hi - lo < max(0.035, hi * 0.125)) return center;
+    vec2 dir = vec2(-((a + b) - (c + d)), (a + c) - (b + d));
+    float reduce = max((a + b + c + d) * 0.03125, 0.0078125);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -4.0, 4.0) * u_texel;
+    vec3 mid = 0.5 * (texture(u_img, uv - dir / 6.0).rgb + texture(u_img, uv + dir / 6.0).rgb);
+    vec3 wide = mid * 0.5 + 0.25 * (texture(u_img, uv - dir * 0.5).rgb + texture(u_img, uv + dir * 0.5).rgb);
+    float lum = dot(wide, weights);
+    return lum < lo || lum > hi ? mid : wide;
+}
 void main() {
-    vec3 c = texture(u_img, v_uv).rgb;
+    vec3 c = antialiased(v_uv);
     vec3 n = texture(u_img, v_uv + vec2(0.0, u_texel.y)).rgb;
     vec3 s = texture(u_img, v_uv - vec2(0.0, u_texel.y)).rgb;
     vec3 e = texture(u_img, v_uv + vec2(u_texel.x, 0.0)).rgb;
@@ -50,8 +71,8 @@ void main() {
 
 
 class PostFX:
-    def __init__(self, ctx: arcade.ArcadeContext, sharp: float = 0.6, contrast: float = 1.06,
-                 saturation: float = 1.1) -> None:
+    def __init__(self, ctx: arcade.ArcadeContext, sharp: float = 0.2, contrast: float = 1.02,
+                 saturation: float = 1.03) -> None:
         self.ctx = ctx
         self.program = ctx.program(vertex_shader=VS, fragment_shader=FS)
         self.program["u_img"] = 0
@@ -66,11 +87,18 @@ class PostFX:
     def _fit(self, size: tuple[int, int]) -> None:
         if size == self.size and self.tex is not None:
             return
-        self.size = size
+        old_fbo, old_tex = self.fbo, self.tex
         self.tex = self.ctx.texture(size, components=4)
-        self.tex.filter = (self.ctx.NEAREST, self.ctx.NEAREST)
+        self.tex.filter = (self.ctx.LINEAR, self.ctx.LINEAR)
         self.fbo = self.ctx.framebuffer(color_attachments=[self.tex])
+        self.size = size
         self.program["u_texel"] = (1.0 / size[0], 1.0 / size[1])
+        # Эти ресурсы принадлежат только PostFX. Освобождаем их сразу при resize,
+        # не оставляя полноразмерные буферы в очереди context_gc до следующей сборки.
+        if old_fbo is not None:
+            old_fbo.delete()
+        if old_tex is not None:
+            old_tex.delete()
 
     def apply(self) -> None:
         """Сводит MSAA основного буфера в текстуру и рисует её обратно с обработкой."""

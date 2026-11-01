@@ -78,17 +78,27 @@ def _axe_frame(x, y, z):
 # ---------------------------------------------------------------------------------------------- анимации
 
 def run_f():
-    return rig.run_pose(stride=36, lean=10)
+    return combat_run(34, 8)
+
+
+def combat_run(stride, lean):
+    """Вес на опорной ноге, спокойная голова и меньший подскок при беге с винтовкой."""
+    def pose(t):
+        p = rig._gait(t, stride, 66, 17, 24, lean, 0.033, 0.025, 4.0, 0.012, 0, (), True)
+        p["weapon@loc"] = (0.004 * math.sin(t * math.tau), -0.012 * abs(math.sin(t * math.tau)), 0.0)
+        p["head"] = (3 + 1.0 * math.sin(t * math.tau), 0, 0)
+        return p
+    return pose
 
 
 def run_b():
-    base = rig.run_pose(stride=28, lean=-3)
+    base = combat_run(26, -2)
     return lambda t: base(1 - t)            # бег спиной: тот же цикл в обратную сторону, корпус чуть назад
 
 
 def strafe(side):
     """Бег боком: таз и ноги развёрнуты по ходу, грудь — обратно к прицелу."""
-    base = rig.run_pose(stride=32, lean=6)
+    base = combat_run(28, 5)
     turn = -45 if side == "R" else 45          # больше — корпус «перекручен» относительно ног
 
     def fn(t):
@@ -111,7 +121,22 @@ def chop_pose():
     hit = dict(base)
     hit.update({"spine": (-10, -12, 0), "chest": (-14, -16, 0), "upperarm.R": (40, 0, 5), "forearm.R": (5, 0, 0),
                 "hand.R": (-35, 0, 0), "head": (6, 0, 0)})
-    return keyed([(0.0, wind), (0.5, wind), (0.72, hit), (0.85, hit), (1.0, wind)])
+    # Удар совпадает с событием симуляции на конце цикла; виден полный замах и ускорение лезвия.
+    ready = dict(base)
+    ready.update({"spine": (-2, -10, 0), "chest": (-4, -10, 0), "upperarm.R": (55, 0, 8),
+                  "forearm.R": (20, 0, 0), "hand.R": (-20, 0, 0)})
+    return keyed([(0.0, hit), (0.18, ready), (0.6, wind), (0.72, wind), (0.96, hit), (1.0, hit)])
+
+
+def breathing_pose():
+    def pose(t):
+        ph = math.tau * t
+        p = rig.aim_stance(math.sin(ph) * 0.45)
+        add(p, "chest", (0.7 * math.sin(ph * 2), 0, 0))
+        add(p, "spine@loc", (0, 0, 0.0035 * math.sin(ph * 2)))
+        p["head"] = (-2.5, math.sin(ph) * 2.0, 0)
+        return p
+    return pose
 
 
 def vault_pose():
@@ -130,13 +155,13 @@ def vault_pose():
 
 def actions(m):
     m.ik_arms = ("L", "R")
-    m.action("idle", 90, rig.aim_pose())
+    m.action("idle", 120, breathing_pose())
     m.action("run_f", 20, run_f())
     m.action("run_b", 22, run_b())
     m.action("run_l", 20, strafe("L"))
     m.action("run_r", 20, strafe("R"))
     m.action("shoot", 10, rig.shoot_pose(kick=6, slide=0.05), loop=False)
-    m.action("chop", 12, chop_pose(), ik=False)
+    m.action("chop", 24, chop_pose(), ik=False)
     m.action("vault", 18, vault_pose(), loop=False)
     m.action("hit", 14, rig.hit_pose(), loop=False)
     m.action("die", 44, rig.death_pose(0.98), loop=False, ik=False)
@@ -144,6 +169,17 @@ def actions(m):
 
 def build():
     m = RigModel("marine", JOINTS, tex_size=512 if FAST else 2048)    # тело и шесть стволов в одной текстуре
+    m.realistic = True
+    # Полевые материалы: матовая олива, серо-зелёная ткань, сталь и тёмное стекло.
+    style.PAL.update({
+        "armor": ((0.36, 0.40, 0.31), 0.35, 0.32, 0),
+        "armor_dk": ((0.23, 0.27, 0.22), 0.3, 0.25, 0),
+        "armor_lt": ((0.47, 0.50, 0.40), 0.35, 0.35, 0),
+        "sand": ((0.48, 0.45, 0.36), 0, 0.2, 0),
+        "suit": ((0.23, 0.25, 0.22), 0, 0.12, 0),
+        "strap": ((0.28, 0.30, 0.24), 0, 0.14, 0),
+        "visor": ((0.12, 0.16, 0.14), 0.85, 0.9, 0),
+    })
     m.camo_scale = 8.0
     body.legs(m, P)
     body.waist(m)
@@ -151,6 +187,7 @@ def build():
     body.backpack(m)
     body.arms(m, P)
     body.helmet(m)
+    body.field_details(m, P)
     mar(m)
     x, _, z = P("weapon")
     for gun in (guns.shotgun, guns.sniper, guns.flame, guns.rocket, guns.shock):

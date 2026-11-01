@@ -35,6 +35,19 @@ class Stats:
     def names(self) -> list[str]:
         return list(self._base)
 
+    def preview(self, offer: Offer, common_bonus: float) -> tuple[float, float]:
+        """Текущее и будущее значение с учётом множителей и потолка, без изменения статистики."""
+        up = offer.upgrade
+        current = self[up.stat]
+        amount = offer.amount(common_bonus)
+        added = self._add[up.stat] + (amount if up.mode == "add" else 0.0)
+        mult = self._mult[up.stat] * (1 + amount if up.mode == "mult" else 1.0)
+        after = (self._base[up.stat] + added) * mult
+        return current, min(after, self._caps.get(up.stat, after))
+
+    def capped(self, name: str) -> bool:
+        return name in self._caps and self[name] >= self._caps[name] - 1e-9
+
 
 def xp_to_next(level: int, cfg: XpCfg) -> int:
     """Опыт, нужный с уровня level до следующего; растёт плавно, первые уровни — за 20–30 с."""
@@ -80,6 +93,8 @@ class Offer:
         """Насколько изменится характеристика: доля для mult, абсолютная прибавка для add."""
         if self.special:
             return 0.0
+        if self.upgrade.fixed:
+            return self.upgrade.value
         if self.upgrade.mode == "mult":
             return self.rarity.bonus
         value = self.upgrade.value * self.rarity.bonus / common_bonus
@@ -101,13 +116,16 @@ class Upgrades:
     ranks: dict[str, int] = field(default_factory=dict)
     taken: list[Offer] = field(default_factory=list)
 
-    def available(self, owned: dict[str, tuple[int, bool]] | None = None, free_slot: bool = False) -> list[Upgrade]:
+    def available(self, owned: dict[str, tuple[int, bool]] | None = None, free_slot: bool = False,
+                  stats: Stats | None = None) -> list[Upgrade]:
         """Что можно предложить. owned — стволы в слотах: id → (уровень, есть ли модификация).
         Улучшения ствола — только пока он в слоте и не достиг 5-го уровня; на 5-м — карточка модификации;
         пока есть свободный слот — карточки новых стволов."""
         owned = owned or {}
         out = []
         for u in self.pool:
+            if stats is not None and u.stat and stats.capped(u.stat):
+                continue
             if u.max_rank and self.ranks.get(u.id, 0) >= u.max_rank:
                 continue
             if u.weapon and (u.weapon not in owned or owned[u.weapon][0] >= MAX_WEAPON_LEVEL):
@@ -122,9 +140,16 @@ class Upgrades:
         return out
 
     def offer(self, rng: np.random.Generator, count: int = 3, owned: dict[str, tuple[int, bool]] | None = None,
-              free_slot: bool = False) -> list[Offer]:
+              free_slot: bool = False, stats: Stats | None = None,
+              exclude: set[str] | None = None) -> list[Offer]:
         """Три разные карточки: хотя бы одна для оружия и хотя бы одна пассивная, если такие остались."""
-        left = self.available(owned, free_slot)
+        available = self.available(owned, free_slot, stats)
+        left = [u for u in available if u.id not in (exclude or set())]
+        for group in ("weapon", "passive"):
+            if not any(u.group == group for u in left):
+                left += [u for u in available if u.group == group]
+        if len(left) < count:
+            left += [u for u in available if u not in left]
         picks: list[Upgrade] = []
         for group in ("weapon", "passive"):
             options = [u for u in left if u.group == group and u not in picks]

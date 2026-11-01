@@ -18,6 +18,7 @@ from pyglet import gl
 
 from starrun.sim.combat import BULLET, GRENADE, PELLET, ROCKET, SNIPER
 from starrun.sim.world import World
+from starrun.ui.gun_feedback import SpentCases
 from starrun.ui.mesh3d import POINT_LIGHTS
 
 MAX_LIGHTS = 8
@@ -172,6 +173,8 @@ class Effects3D:
         self.time = 0.0
         self.prev_bullets: np.ndarray | None = None
         self.muzzle: np.ndarray | None = None      # дуло из позы модели (Scene3D); нет — оценка по MUZZLE
+        self.cases = SpentCases()
+        self.prev_reload: dict[str, float] = {}
 
     # ---------- события мира → частицы ----------
     def update(self, dt: float, world: World) -> None:
@@ -180,14 +183,55 @@ class Effects3D:
             self.explosion(e.pos, e.radius)
         for mark in world.blasts:
             self.orbital(mark.pos, mark.radius)
+        if "chop" in world.events:
+            p, g = world.player, self.rng
+            pos = p.pos + p.heading * 34
+            n = 9
+            velocity = np.column_stack([g.normal(0, 45, (n, 2)), g.uniform(70, 150, n)])
+            self.smoke.emit(np.tile([*pos, 32], (n, 1)), velocity, np.tile([5.0, 1.0], (n, 1)),
+                            (0.56, 0.43, 0.25, 0.95), (0.38, 0.3, 0.18, 0.0), g.uniform(0.2, 0.45, n),
+                            rise=-350, drag=1.0)
         self._shots(world)
+        self._weapon_feedback(world)
         self._flames(dt, world)
         self._rockets(dt, world)
         self.fire.step(dt)
         self.smoke.step(dt)
+        self.cases.step(dt)
         for light in self.lights:
             light.age += dt
         self.lights = [x for x in self.lights if x.age < x.life]
+
+    def _weapon_feedback(self, world: World) -> None:
+        p, gun = world.player, world.weapon
+        for event in world.events:
+            if event.startswith("shot_"):
+                self.cases.emit(p.pos, p.facing, event[5:])
+        for owned in world.weapons:
+            if owned.id == gun.id and owned.reload_left > 0 and self.prev_reload.get(owned.id, 0.0) <= 0:
+                self.cases.emit(p.pos, p.facing, gun.id, magazine=True)
+            self.prev_reload[owned.id] = owned.reload_left
+        hits = world.hit_feedback
+        if not hits:
+            return
+        # Частицы ближайших попаданий: не более восьми всплесков за кадр при массовом уроне.
+        nearest = sorted(hits, key=lambda hit: float(np.sum((hit.pos - p.pos) ** 2)))[:8]
+        g = self.rng
+        for hit in nearest:
+            if np.linalg.norm(hit.pos - p.pos) > 900:
+                continue
+            n = 4 if hit.critical else 3
+            pos = np.tile([*hit.pos, 30.0], (n, 1))
+            velocity = np.column_stack([g.normal(0, 90 if hit.armored else 55, (n, 2)), g.uniform(30, 100, n)])
+            if hit.armored:
+                color = (0.68, 0.84, 1.0, 0.9)
+            elif hit.critical:
+                color = (1.0, 0.79, 0.28, 0.95)
+            else:
+                color = (0.42, 0.64, 0.18, 0.9)
+            pool = self.fire if hit.armored or hit.critical else self.smoke
+            pool.emit(pos, velocity, np.tile([5.0 if hit.critical else 3.5, 1.0], (n, 1)),
+                      color, (*color[:3], 0.0), g.uniform(0.1, 0.22, n), rise=-350, drag=3.0)
 
     def explosion(self, pos: np.ndarray, radius: float, big: bool = False) -> None:
         r, g = radius, self.rng

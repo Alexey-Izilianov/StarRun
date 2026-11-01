@@ -17,6 +17,7 @@ from starrun.balance import BIOME_IDS, Balance
 from starrun.settings import Settings, resolutions
 from starrun.sim.world import Controls, World
 from starrun.ui.audio import Audio
+from starrun.ui.choices import ChoiceCursor
 from starrun.ui.gl3d import Camera3D
 from starrun.ui.hud import H, Hud, SettingRow
 from starrun.ui.postfx import PostFX
@@ -83,6 +84,9 @@ class Game(arcade.Window):
             self.scene3d.reset()
             self._follow(0.0)
         self.hud = Hud(self.shapes)
+        self.choice_cursor = ChoiceCursor()
+        self.held.clear()
+        self._clear_actions()
         self.audio.reset(self.world)
         self.mode = Mode.PLAY
         self.background_color = self.balance.biomes[biome].ground if biome else GROUND
@@ -192,6 +196,9 @@ class Game(arcade.Window):
         return Controls((dx, dy), sprint, target, select, cycle)
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
+        repeat = symbol in self.held
+        if repeat:
+            return
         self.held.add(symbol)
         w = self.world
         if symbol == arcade.key.F11:
@@ -200,7 +207,15 @@ class Game(arcade.Window):
             if symbol in (arcade.key.ENTER, arcade.key.SPACE):
                 self.next_run()
         elif w.awaiting_choice:
-            if symbol in CHOICE_KEYS and CHOICE_KEYS[symbol] < len(w.offer()):
+            if symbol in MOVE_KEYS:
+                dx, dy = MOVE_KEYS[symbol]
+                self.choice_cursor.move(1 if dx > 0 or dy < 0 else -1, len(w.offer()))
+                self.audio.ui()
+            elif symbol in (arcade.key.ENTER, arcade.key.SPACE):
+                self.choose(self.choice_cursor.index)
+            elif symbol == arcade.key.R:
+                self.reroll()
+            elif symbol in CHOICE_KEYS and CHOICE_KEYS[symbol] < len(w.offer()):
                 self.choose(CHOICE_KEYS[symbol])
         elif symbol == arcade.key.ESCAPE:
             self.mode = {Mode.PLAY: Mode.PAUSE, Mode.SETTINGS: Mode.PAUSE}.get(self.mode, Mode.PLAY)
@@ -222,6 +237,10 @@ class Game(arcade.Window):
         self.mouse_screen = (x, y)
         p = self.ui_cam.unproject((x, y))
         self.hud.mouse = (p.x, p.y)
+        if self.world.awaiting_choice:
+            for button in self.hud.buttons:
+                if button.key.startswith("card") and button.contains(p.x, p.y):
+                    self.choice_cursor.index = int(button.key[4:])
 
     def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> None:
         p = self.ui_cam.unproject((x, y))
@@ -236,7 +255,20 @@ class Game(arcade.Window):
 
     def choose(self, i: int) -> None:
         self.world.choose(i)
-        self.held.clear()  # клавиша, зажатая до карточек, не должна тянуть десантника после
+        # Подтверждение удерживаем до отпускания, чтобы Enter не принимал несколько уровней подряд.
+        self.held.intersection_update({arcade.key.ENTER, arcade.key.SPACE, *CHOICE_KEYS})
+        self.choice_cursor.reset()
+        self._clear_actions()
+
+    def reroll(self) -> None:
+        if self.world.reroll():
+            self.choice_cursor.reset()
+            self.audio.ui()
+
+    def _clear_actions(self) -> None:
+        self.ability_pressed = False
+        self.slot_pressed = None
+        self.wheel = 0
 
     # ---------- цикл ----------
     def on_update(self, delta_time: float) -> None:
@@ -244,6 +276,10 @@ class Game(arcade.Window):
         running = self.mode is Mode.PLAY and not w.awaiting_choice and not w.session.over
         if running:
             w.step(delta_time, self.controls())
+            if w.awaiting_choice:
+                self.held.clear()
+                self._clear_actions()
+                self.choice_cursor.reset()
             self._react(w.events)
             self.audio.react(w.events, w)
             self.scene.update(delta_time, w)
@@ -311,7 +347,7 @@ class Game(arcade.Window):
             if w.session.over:
                 self.hud.end(w, self.vw, self.next_run, self.close)
             elif w.awaiting_choice:
-                self.hud.level_up(w, self.vw, self.choose)
+                self.hud.level_up(w, self.vw, self.choose, self.choice_cursor.index, self.reroll)
             elif self.mode is Mode.PAUSE:
                 self.hud.pause(self.vw, self._resume, self.new_run, self.open_settings, self.close)
             elif self.mode is Mode.SETTINGS:

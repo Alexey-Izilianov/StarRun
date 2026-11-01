@@ -119,6 +119,11 @@ class WeaponCfg:
     mod_time: float = 0.0
     mod_count: int = 0
     mod_found: bool = False         # модификацию не выбрать карточкой — только найти на карте
+    ricochet_range: float = 0.0
+    ricochet_damage: float = 1.0
+    field_time: float = 0.0
+    field_dps: float = 0.0
+    field_radius_share: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -175,6 +180,7 @@ class XpCfg:
     base: float
     linear: float
     quad: float
+    rerolls: int = 3
 
 
 @dataclass(frozen=True)
@@ -197,6 +203,7 @@ class Upgrade:
     integer: bool = False
     max_rank: int = 0               # 0 — без ограничения
     weapon: str = ""                # улучшение конкретного ствола
+    fixed: bool = False              # поведенческий эффект не масштабируется редкостью
 
 
 @dataclass(frozen=True)
@@ -305,6 +312,8 @@ class Balance:
 
     def validate(self) -> None:
         """Связи между файлами, которые TOML сам не проверит."""
+        if type(self.xp.rerolls) is not int or self.xp.rerolls < 0:
+            raise ValueError("xp.rerolls должен быть целым неотрицательным числом")
         for kind in ENEMY_KINDS:
             if kind not in self.enemies:
                 raise ValueError(f"enemies.toml: нет жука {kind}")

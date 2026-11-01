@@ -135,7 +135,7 @@ class SceneRenderer:
         self.map.ground(world)
 
         pos, size = pebbles(left - 20, bottom - 20, right + 20, top + 20)
-        keep = self.map.pebble_mask(world, pos)
+        keep = self.map.pebble_mask(world, pos) & (solid or self.map.flat_ground)
         pos, size = pos[keep], size[keep]
         light = size > 9
         dark_color, light_color = PEBBLE_DARK, PEBBLE_LIGHT

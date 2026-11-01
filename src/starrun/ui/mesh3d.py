@@ -65,7 +65,7 @@ vec3 shade(vec3 albedo, vec3 n, vec3 wp, float metal, float gloss) {
     float sh = shadow(wp);
     float ndl = max(dot(n, u_sun), 0.0);
     vec3 sky = mix(vec3(0.36, 0.33, 0.29), vec3(0.62, 0.66, 0.74), n.z * 0.5 + 0.5);   // снизу — тёплый отсвет земли
-    vec3 col = albedo * (sky * 0.62 + vec3(1.0, 0.94, 0.84) * ndl * sh * 0.9);
+    vec3 col = albedo * (sky * 0.74 + vec3(1.0, 0.94, 0.84) * ndl * sh * 0.9);
     vec3 v = normalize(u_eye - wp);
     vec3 h = normalize(u_sun + v);
     float spec = pow(max(dot(n, h), 0.0), mix(6.0, 48.0, gloss)) * gloss * (0.25 + 0.75 * sh);
@@ -80,6 +80,7 @@ SKINNED_VS = """
 uniform mat4 u_vp;
 uniform sampler2D u_anim;
 uniform float u_px;
+uniform float u_recoil;
 in vec3 in_pos; in vec3 in_nrm; in vec2 in_uv; in float in_bone;
 in vec4 i_a;       // x, y, z, курс
 in vec4 i_b;       // кадр A, кадр B, доля B, масштаб
@@ -99,6 +100,13 @@ void main() {
     mat4 m = bone(int(i_b.x), b) * (1.0 - i_b.z) + bone(int(i_b.y), b) * i_b.z;
     vec3 p = (m * vec4(in_pos, 1.0)).xyz;
     vec3 n = mat3(m) * in_nrm;
+    // Малый импульс верхней части тела работает и во время бега; ноги продолжают свой цикл.
+    float kick = smoothstep(0.95, 1.35, p.z) * u_recoil;
+    mat2 recoil = mat2(cos(kick), sin(kick), -sin(kick), cos(kick));
+    p.yz = recoil * (p.yz - vec2(0.0, 1.1)) + vec2(0.0, 1.1);
+    n.yz = recoil * n.yz;
+    float flinch = step(0.9, min(i_c.r, min(i_c.g, i_c.b))) * i_c.a;
+    p.y -= 0.045 * flinch * smoothstep(0.05, 0.4, p.z);
     float c = cos(i_a.w), s = sin(i_a.w);
     mat2 r = mat2(c, s, -s, c);
     p.xy = r * p.xy;
@@ -125,8 +133,8 @@ void main() {
         col = min(u_glow.rgb * (0.9 + 0.12 * u_glow.a), vec3(1.0));
     } else {
         // смещение мип-уровня к резкости: модели на экране мелкие, иначе берётся размытый уровень
-        vec4 mk = texture(u_mask, v_uv, -0.75);
-        col = shade(texture(u_albedo, v_uv, -0.75).rgb, normalize(v_n), v_wp, mk.r, mk.a);
+        vec4 mk = texture(u_mask, v_uv, -0.2);
+        col = shade(texture(u_albedo, v_uv, -0.2).rgb, normalize(v_n), v_wp, mk.r, mk.a);
     }
     f_color = vec4(mix(col, v_tint.rgb, v_tint.a), 1.0);
 }
@@ -135,18 +143,14 @@ void main() {
 STATIC_VS = """
 #version 330
 uniform mat4 u_vp;
-uniform vec2 u_player;
-uniform float u_fadeable;      // 0 — низкие предметы (пни, находки): десантника они не закрывают
+uniform float u_wind;
+uniform float u_time;
 in vec3 in_pos; in vec3 in_nrm; in vec4 in_col;
 in vec4 i_a;       // x, y, z, курс
 in vec4 i_s;       // масштаб по x, y, z; прозрачность
 in vec4 i_c;       // подмес цвета и его сила
-out vec3 v_wp; out vec3 v_n; out vec4 v_col; out float v_fade;
+out vec3 v_wp; out vec3 v_n; out vec4 v_col;
 void main() {
-    // стоит между камерой и десантником (южнее, в полосе к камере) — растворяется сеткой, иначе его не видно
-    vec2 rel = i_a.xy - u_player;
-    bool between = rel.y < 40.0 && rel.y > -230.0 && abs(rel.x) < 70.0 + max(0.0, -rel.y) * 0.15;
-    v_fade = (u_fadeable > 0.5 && between) ? 1.0 : 0.0;
     float c = cos(i_a.w), s = sin(i_a.w);
     mat2 r = mat2(c, s, -s, c);
     vec3 p = in_pos * i_s.xyz;
@@ -154,6 +158,8 @@ void main() {
     vec3 n = in_nrm / max(i_s.xyz, vec3(1e-4));
     n.xy = r * n.xy;
     v_wp = i_a.xyz + p;
+    float sway = max(0.0, p.z - 8.0) * 0.025 * u_wind;
+    v_wp.xy += vec2(sin(u_time * 1.4 + i_a.x * 0.012), cos(u_time * 1.1 + i_a.y * 0.013)) * sway;
     v_n = normalize(n);
     v_col = vec4(mix(in_col.rgb, i_c.rgb, i_c.a), in_col.a * i_s.w);
     gl_Position = u_vp * vec4(v_wp, 1.0);
@@ -162,15 +168,10 @@ void main() {
 
 STATIC_FS = """
 #version 330
-in vec3 v_wp; in vec3 v_n; in vec4 v_col; in float v_fade;
+in vec3 v_wp; in vec3 v_n; in vec4 v_col;
 out vec4 f_color;
-const float BAYER[16] = float[](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 """ + LIGHT + """
 void main() {
-    if (v_fade > 0.5) {                     // растворение сеткой 4×4: глубина честная, сортировать не нужно
-        ivec2 q = ivec2(gl_FragCoord.xy) % 4;
-        if ((BAYER[q.y * 4 + q.x] + 0.5) / 16.0 < 0.65) discard;
-    }
     f_color = vec4(shade(v_col.rgb, normalize(v_n), v_wp, 0.0, 0.15), v_col.a);
 }
 """
@@ -213,6 +214,7 @@ def load_texture(ctx: arcade.ArcadeContext, path: Path) -> arcade.gl.Texture2D:
     tex = ctx.texture(img.size, components=4, data=_flip(img))
     tex.build_mipmaps()
     tex.filter = (ctx.LINEAR_MIPMAP_LINEAR, ctx.LINEAR)
+    tex.anisotropy = 8.0
     return tex
 
 
@@ -301,8 +303,9 @@ class StaticMesh:
     FLOATS = 12
 
     def __init__(self, ctx: arcade.ArcadeContext, parts: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
-                 capacity: int = 4096, fadeable: bool = True) -> None:
+                 capacity: int = 4096, fadeable: bool = True, wind: bool = False) -> None:
         self.fadeable = fadeable
+        self.wind = wind
         pos, nrm, col, idx = merge(parts)
         verts = np.concatenate([pos, nrm, col], 1).astype(np.float32)
         self.vbo = ctx.buffer(data=verts.tobytes())
@@ -320,8 +323,8 @@ class StaticMesh:
         if not n:
             return
         self.inst.write(inst[:n].astype(np.float32).tobytes())
-        with contextlib.suppress(KeyError):           # в проходе теней униформы нет
-            program["u_fadeable"] = 1.0 if self.fadeable else 0.0
+        with contextlib.suppress(KeyError):
+            program["u_wind"] = 1.0 if self.wind else 0.0
         self.geometry.render(program, vertices=self.count, instances=n)
 
 

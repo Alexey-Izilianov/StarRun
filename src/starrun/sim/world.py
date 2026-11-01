@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from starrun.balance import Balance, Stamina
-from starrun.sim.combat import Acid, Bullets, Explosion, Impacts, Mark, Orbital, fan
+from starrun.sim.combat import Acid, Bullets, Explosion, HitFeedback, Impacts, Mark, Orbital, fan
 from starrun.sim.effects import Decals, Gems, Particles
 from starrun.sim.progression import Offer, Progress, Stats, Upgrades
 from starrun.sim.session import Phase, Session
@@ -32,6 +32,7 @@ SIGHT_BATCH = 8             # сколько ближайших жуков пр�
 EXPLOSION_CLEAR = 0.6       # взрыв выжигает лес в этой доле своего радиуса
 SAND_SLOW = 0.7             # замедление при полном погружении в зыбучий песок
 ITEM_REACH = 18.0           # находка подбирается при касании (к радиусу десантника)
+MAX_HIT_FEEDBACK = 24       # визуальный журнал ограничен, взрыв в толпе не создаёт сотни эффектов
 
 
 @dataclass
@@ -133,9 +134,11 @@ class World:
         self.blasts: list[Mark] = []     # взрывы орбитального удара за последний шаг
         self.booms: list[Explosion] = [] # взрывы ракет и гранат за последний шаг
         self.arcs: list[np.ndarray] = [] # молнии шокера за последний шаг: точки цепи
+        self.hit_feedback: list[HitFeedback] = []
         self.evac_pos: np.ndarray | None = None
         self.target: int | None = None   # номер жука, в которого целится выбранный ствол
         self._offer: list[Offer] = []
+        self.rerolls_left = balance.xp.rerolls
 
     # ---------- оружие ----------
     @property
@@ -158,10 +161,22 @@ class World:
 
     def offer(self) -> list[Offer]:
         if self.awaiting_choice and not self._offer:
-            self._offer = self.upgrades.offer(self.rng, owned=self.owned(), free_slot=len(self.weapons) < SLOTS)
+            self._offer = self.upgrades.offer(self.rng, owned=self.owned(), free_slot=len(self.weapons) < SLOTS,
+                                              stats=self.stats)
         return self._offer
 
+    def reroll(self) -> bool:
+        if not self.awaiting_choice or self.rerolls_left <= 0:
+            return False
+        previous = {o.upgrade.id for o in self.offer()}
+        self._offer = self.upgrades.offer(self.rng, owned=self.owned(), free_slot=len(self.weapons) < SLOTS,
+                                          stats=self.stats, exclude=previous)
+        self.rerolls_left -= 1
+        return True
+
     def choose(self, i: int) -> None:
+        if not self.awaiting_choice or not 0 <= i < len(self.offer()):
+            return
         offer = self.offer()[i]
         up = offer.upgrade
         if offer.special == "weapon":
@@ -185,6 +200,7 @@ class World:
         self.blasts = []
         self.booms = []
         self.arcs = []
+        self.hit_feedback = []
         if self.session.over or self.awaiting_choice:
             return
         dt = min(dt, MAX_DT)
@@ -262,7 +278,8 @@ class World:
 
         for w in self.weapons:
             w.tick(dt, self)
-        self.weapon.update(dt, self)
+        if p.chop < 0:
+            self.weapon.update(dt, self)
         self.turrets.step(dt, self)
         self.fires.step(dt, self)
         self.damage_dealt += self.swarm.burn_tick(dt)
@@ -376,14 +393,37 @@ class World:
                     self.events.append("tree_down")
                 return
 
-    def deal(self, idx: np.ndarray, amounts: np.ndarray, armor: bool = True) -> None:
+    def deal(self, idx: np.ndarray, amounts: np.ndarray, armor: bool = True,
+             critical: np.ndarray | None = None, feedback: bool = True) -> None:
         """Урон по жукам с учётом брони; в статистику идёт фактически нанесённый."""
         if len(idx):
+            room = max(0, MAX_HIT_FEEDBACK - len(self.hit_feedback)) if feedback else 0
+            if room:
+                targets = idx[:room]
+                raw = np.broadcast_to(amounts, idx.shape)[:room]
+                hit = np.maximum(raw - self.swarm.armor[targets], np.minimum(raw, 1.0)) if armor else raw
+                hp = self.swarm.hp[targets].copy()
+                remaining: dict[int, float] = {}
+                for j, target in enumerate(targets):
+                    target = int(target)
+                    available = remaining.get(target, max(0.0, float(hp[j])))
+                    damage = min(available, max(0.0, float(hit[j])))
+                    remaining[target] = max(0.0, available - damage)
+                    if damage <= 0:
+                        continue
+                    self.hit_feedback.append(HitFeedback(self.swarm.pos[target].copy(), damage,
+                                                        bool(armor and hit[j] < raw[j]),
+                                                        bool(critical[j]) if critical is not None else False,
+                                                        int(self.swarm.kind[target])))
             self.damage_dealt += self.swarm.hit(idx, amounts, armor)
 
     def resolve(self, imp: Impacts) -> None:
         """Последствия полёта пуль: урон, отбрасывание, поджог, взрывы."""
-        self.deal(imp.bug, imp.damage)
+        bypass = imp.armor_pierce if len(imp.armor_pierce) else np.zeros(len(imp.bug), bool)
+        critical = imp.critical if len(imp.critical) else np.zeros(len(imp.bug), bool)
+        for armor, mask in ((True, ~bypass), (False, bypass)):
+            self.deal(imp.bug[mask], imp.damage[mask], armor=armor, critical=critical[mask])
+        self.swarm.armor[imp.bug[bypass]] = 0.0  # расколотый панцирь помогает и остальному оружию
         pushed = np.flatnonzero(np.abs(imp.knock).sum(1) > 0)
         self.swarm.knock(imp.bug[pushed], imp.knock[pushed] * KNOCK_STEP, self.terrain)
         burning = np.flatnonzero(imp.burn_time > 0)
@@ -405,6 +445,8 @@ class World:
         self.splashes.burst(self.rng, e.pos[None], 14, (80, 360), 0.4, (4, 9))
         self.booms.append(e)
         self.events.append("explosion")
+        if e.fire_time > 0:
+            self.fires.add(e.pos, e.fire_radius, e.fire_time, e.fire_dps)
         if e.cluster and not secondary:  # кассета: малые заряды кольцом вокруг
             angles = self.rng.uniform(0, 2 * np.pi, e.cluster)
             dist = self.rng.uniform(0.6, 1.1, e.cluster) * e.radius
@@ -465,7 +507,7 @@ class World:
         if tree is None:
             p.chop = -1.0
         else:  # упёрся в дерево — замах, удар в конце замаха
-            p.chop = max(p.chop, 0.5) + dt / c.chop_every
+            p.chop = (0.0 if p.chop < 0 else p.chop) + dt / c.chop_every
             if p.chop >= 1:
                 p.chop -= 1
                 self.events.append("chop")

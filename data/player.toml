@@ -18,6 +18,7 @@ mar_damage = 1.0
 mar_rate = 1.0
 mar_pierce = 0          # сколько жуков пуля пробивает насквозь
 mar_crit = 0.0          # шанс двойного урона
+mar_ricochet = 0        # перенаведения после исчерпания пробития
 shotgun_damage = 1.0
 shotgun_rate = 1.0
 shotgun_pellets = 0     # прибавка к числу дробин
@@ -25,6 +26,7 @@ shotgun_spread = 1.0    # множитель ширины веера
 sniper_damage = 1.0
 sniper_rate = 1.0
 sniper_pierce = 0
+sniper_armor_pierce = 0 # пуля игнорирует броню
 flame_damage = 1.0
 flame_rate = 1.0
 flame_range = 1.0
@@ -32,6 +34,7 @@ flame_burn = 1.0        # урон горения
 rocket_damage = 1.0
 rocket_rate = 1.0
 rocket_radius = 1.0
+rocket_fire = 0        # взрыв оставляет горящее поле
 turret_damage = 1.0
 turret_rate = 1.0
 turret_life = 1.0
@@ -44,6 +47,9 @@ orbital_radius = 1.0
 [caps]
 dodge = 0.6
 mar_crit = 0.5
+mar_ricochet = 2
+sniper_armor_pierce = 1
+rocket_fire = 1
 
 [stamina]
 max = 100

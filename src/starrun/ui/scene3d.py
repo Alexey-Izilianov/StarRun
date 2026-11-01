@@ -16,13 +16,17 @@ import arcade
 import numpy as np
 
 from starrun.sim import terrain as T
-from starrun.sim.swarm import BRAIN, FLYER, QUEEN, SEMI_BOSS, SPITTER, TANKER, WARRIOR, WORKER
+from starrun.sim.swarm import BRAIN, FLYER, HIT_FLASH, QUEEN, SEMI_BOSS, SPITTER, TANKER, WARRIOR, WORKER
 from starrun.sim.world import World
+from starrun.ui import level_details
 from starrun.ui import mesh3d as M
 from starrun.ui.fx3d import GROUND_LIGHT_FS, Effects3D, Light, flame_puffs, splash_drops
 from starrun.ui.gl3d import PX_PER_M, Camera3D, look_at, ortho
+from starrun.ui.ground3d import Ground3D
+from starrun.ui.gun_feedback import recoil_step
 from starrun.ui.scene import ARC_LIFE, SceneRenderer
 from starrun.ui.terrain_view import TerrainView, cell_hash
+from starrun.ui.visibility import prop_opacity, shell_alpha
 
 MODELS = Path(__file__).resolve().parents[3] / "assets" / "models"
 SUN = np.array([0.42, -0.5, 0.76]) / np.linalg.norm([0.42, -0.5, 0.76])   # солнце с юго-востока: тени — на северо-запад
@@ -137,10 +141,13 @@ class Corpse:
 class Scene3D:
     def __init__(self, ctx: arcade.ArcadeContext) -> None:
         self.ctx = ctx
+        self.ground = Ground3D(ctx)
         self.skinned = ctx.program(vertex_shader=M.SKINNED_VS, fragment_shader=M.SKINNED_FS)
         self.skinned_depth = ctx.program(vertex_shader=M.SKINNED_VS, fragment_shader=M.DEPTH_FS)
         self.static = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.STATIC_FS)
         self.static_depth = ctx.program(vertex_shader=M.STATIC_VS, fragment_shader=M.DEPTH_FS)
+        self.details = {name: M.StaticMesh(ctx, parts, fadeable=False, wind=name in ("grass", "fern", "reed", "scrub"))
+                        for name, parts in level_details.meshes().items()}
         self.receiver = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=M.RECEIVER_FS)
         names = {"marine", "turret"} | {look[0] for look in BUG_LOOK.values()}
         self.models = {n: M.SkinnedModel(ctx, MODELS / f"{n}.npz") for n in sorted(names)}
@@ -148,13 +155,13 @@ class Scene3D:
         self.shadow_lod: dict[M.StaticMesh, M.StaticMesh] = {}   # дерево → упрощённое для карты теней
         wall, glass, door = (0.36, 0.37, 0.39), (0.42, 0.62, 0.7), (0.42, 0.29, 0.18)
         self.props = {
-            "wall": M.StaticMesh(ctx, [M.box((40, 40, WALL_H), (0, 0, WALL_H / 2), wall)]),
-            "window": M.StaticMesh(ctx, [M.box((40, 40, 46), (0, 0, 23), wall),
-                                         M.box((40, 40, 28), (0, 0, WALL_H - 14), wall),
+            "wall": M.StaticMesh(ctx, [M.box((40, 14, WALL_H), (0, 0, WALL_H / 2), wall)]),
+            "window": M.StaticMesh(ctx, [M.box((40, 14, 46), (0, 0, 23), wall),
+                                         M.box((40, 14, 28), (0, 0, WALL_H - 14), wall),
                                          M.box((40, 6, 36), (0, 0, 64), glass)]),
-            "door": M.StaticMesh(ctx, [M.box((40, 40, 24), (0, 0, WALL_H - 12), wall),
+            "door": M.StaticMesh(ctx, [M.box((40, 14, 24), (0, 0, WALL_H - 12), wall),
                                        M.box((36, 8, 86), (0, 0, 43), door)]),
-            "door_open": M.StaticMesh(ctx, [M.box((40, 40, 24), (0, 0, WALL_H - 12), wall),
+            "door_open": M.StaticMesh(ctx, [M.box((40, 14, 24), (0, 0, WALL_H - 12), wall),
                                             M.box((8, 34, 86), (-17, 18, 43), door)]),
             "post": M.StaticMesh(ctx, [M.box((7, 7, 44), (0, 0, 22), (0.5, 0.4, 0.27))]),
             "rail": M.StaticMesh(ctx, [M.box((40, 4, 5), (20, 0, 18), (0.48, 0.38, 0.25)),
@@ -167,6 +174,18 @@ class Scene3D:
             path = MODELS / f"prop_{name}.npz"
             if path.exists():
                 self.props[name] = M.StaticMesh(ctx, [M.load_part(path, PX_PER_M)], fadeable=name != "rail")
+        self.shell_names = {self.props[name]: name for name in ("wall", "window", "door", "door_open")}
+        concrete, cap = (0.39, 0.41, 0.40), (0.56, 0.58, 0.55)
+        sill = [M.box((40, 14, 10), (0, 0, 5), concrete), M.box((40, 16, 2), (0, 0, 11), cap)]
+        jambs = [M.box((5, 14, 15), (x, 0, 7.5), cap) for x in (-18, 18)]
+        threshold = [M.box((34, 12, 3), (0, 0, 1.5), (0.35, 0.38, 0.35))]
+        self.cutaway = {
+            "wall": M.StaticMesh(ctx, sill, fadeable=False),
+            "window": M.StaticMesh(ctx, sill, fadeable=False),
+            "door": M.StaticMesh(ctx, jambs + threshold +
+                                  [M.box((31, 6, 28), (0, 0, 14), (0.38, 0.42, 0.32))], fadeable=False),
+            "door_open": M.StaticMesh(ctx, jambs + threshold, fadeable=False),
+        }
         self.rocks = [M.StaticMesh(ctx, [M.load_part(p, PX_PER_M)]) for p in sorted(MODELS.glob("prop_rock_*.npz"))]
         self.stumps = {p.stem.removeprefix("prop_stump_"): M.StaticMesh(ctx, [M.load_part(p, PX_PER_M)], fadeable=False)
                        for p in MODELS.glob("prop_stump_*.npz")}
@@ -181,6 +200,9 @@ class Scene3D:
                                           mode=ctx.TRIANGLE_STRIP)
         self.light = np.identity(4)
         self.fx = Effects3D(ctx)
+        self.case_mesh = M.StaticMesh(ctx, [M.box((6, 2.5, 2.5), (0, 0, 0), (0.72, 0.54, 0.25))], fadeable=False)
+        self.mag_mesh = M.StaticMesh(ctx, [M.box((5, 10, 4), (0, 0, 0), (0.20, 0.23, 0.22))], fadeable=False)
+        self.no_shadow = set(self.details.values()) | {self.case_mesh, self.mag_mesh}
         self.ground_light = ctx.program(vertex_shader=M.RECEIVER_VS, fragment_shader=GROUND_LIGHT_FS)
         self.point_lights: dict[str, tuple[float, ...]] = {}
         self._props_key: tuple | None = None  # type: ignore[type-arg]
@@ -201,6 +223,8 @@ class Scene3D:
         self.muzzle: np.ndarray | None = None                 # дуло в мире (x, y, z) — для вспышки выстрела
         self.prev_pos: np.ndarray | None = None
         self.death_t = 0.0
+        self.shot_t = 999.0
+        self.recoil = 0.0
 
     # ---------- состояние между кадрами ----------
     def update(self, dt: float, world: World) -> None:
@@ -224,6 +248,8 @@ class Scene3D:
     def _marine_state(self, dt: float, world: World) -> None:
         """Клип десантника: ноги — по ходу движения относительно взгляда (вперёд, назад, вбок)."""
         p = world.player
+        self.recoil = recoil_step(self.recoil, dt, world.events)
+        self.shot_t = 0.0 if any(e.startswith("shot_") for e in world.events) else self.shot_t + dt
         speed = 0.0 if self.prev_pos is None or dt <= 0 else float(np.linalg.norm(p.pos - self.prev_pos)) / dt
         self.prev_pos = p.pos.copy()
         if world.session.phase.name == "DEFEAT":
@@ -239,6 +265,8 @@ class Scene3D:
             a = abs(rel)
             clip = "run_f" if a < math.pi / 4 else "run_b" if a > 3 * math.pi / 4 else ("run_l" if rel > 0 else "run_r")
             t = self.marine_t + dt * speed / MARINE_RUN_SPEED
+        elif self.shot_t < 0.18:
+            clip, t = "shoot", self.shot_t
         else:
             clip, t = "idle", self.marine_t + dt
         if clip != self.marine_clip and clip != "die":
@@ -248,13 +276,19 @@ class Scene3D:
         self.fade_left = max(0.0, self.fade_left - dt)
         self.marine_clip, self.marine_t = clip, t
         # разворот к цели с ограниченной скоростью
-        want = math.atan2(p.facing[1], p.facing[0]) - math.pi / 2
+        facing = p.heading if p.chop >= 0 else p.facing
+        want = math.atan2(facing[1], facing[0]) - math.pi / 2
         if self.marine_yaw is None:
             self.marine_yaw = want
         diff = (want - self.marine_yaw + math.pi) % (2 * math.pi) - math.pi
         self.marine_yaw += max(-MARINE_TURN * dt, min(MARINE_TURN * dt, diff))
         a, b, f = self._marine_frames()
         local = self.models["marine"].bone_point("muzzle", a, b, f) * PX_PER_M
+        k = float(np.clip((local[2] / PX_PER_M - 0.95) / 0.4, 0, 1))
+        kick = self.recoil * k * k * (3 - 2 * k)
+        y, z = local[1], local[2] - 1.1 * PX_PER_M
+        local[1] = math.cos(kick) * y - math.sin(kick) * z
+        local[2] = math.sin(kick) * y + math.cos(kick) * z + 1.1 * PX_PER_M
         c, s = math.cos(self.marine_yaw), math.sin(self.marine_yaw)
         self.muzzle = np.array([p.pos[0] + c * local[0] - s * local[1], p.pos[1] + s * local[0] + c * local[1],
                                 local[2]], np.float32)
@@ -276,6 +310,10 @@ class Scene3D:
         scene.map.prepare(world, view)
         props = self._visible(self._props(world, rect), rect) + self._items(world)
         scene.map.flat_stumps = scene.map.flat_items = not self.stumps    # пни и находки — моделями
+        scene.map.flat_ground = False
+        props = self._cutaway_props(world, props, scene.map.roof_alpha)
+        props += [(self.case_mesh, self.fx.cases.instances()),
+                  (self.mag_mesh, self.fx.cases.instances(magazine=True))]
         roofs = self._roofs(world, scene.map)
         units = self._units(world)
 
@@ -285,6 +323,7 @@ class Scene3D:
         self._shadow_pass(cam, props, units)
         cam.apply(ctx)
         ctx.disable(ctx.DEPTH_TEST)
+        self.ground.draw(world.terrain, cam, self.time, rect)
         scene.ground_layers(world, view, solid=False)
         scene.turret_rings(world)
         scene.blast_rings()
@@ -296,13 +335,27 @@ class Scene3D:
         ctx.enable(ctx.DEPTH_TEST)
         self._set_common(self.static, cam.view_proj, cam)
         self._set_common(self.skinned, cam.view_proj, cam)
-        self.static["u_player"] = tuple(world.player.pos)
+        transparent = []
         for mesh, inst in props:
-            mesh.draw(self.static, inst)
+            alpha = (prop_opacity(inst[:, :2], world.player.pos, world.terrain, scene.map.roof_alpha)
+                     if mesh.fadeable else 1.0)
+            faded = inst.copy()
+            faded[:, 7] *= alpha
+            opaque = faded[:, 7] >= 0.995
+            mesh.draw(self.static, faded[opaque])
+            if (~opaque).any():
+                transparent.append((mesh, faded[~opaque]))
         for name, inst, subs in units:
+            self.skinned["u_recoil"] = self.recoil if name == "marine" else 0.0
             self.models[name].draw(self.skinned, inst, subs)
-        for mesh, inst in roofs:
-            mesh.draw(self.static, inst)
+        transparent += roofs
+        ctx.screen.depth_mask = False
+        def distance(pair: tuple[M.StaticMesh, np.ndarray]) -> float:
+            return float(np.linalg.norm(pair[1][:, :3] - cam.eye, axis=1).mean())
+        for mesh, inst in sorted(transparent, key=distance, reverse=True):
+            order = np.argsort(-np.linalg.norm(inst[:, :3] - cam.eye, axis=1))
+            mesh.draw(self.static, inst[order])
+        ctx.screen.depth_mask = True
         ctx.disable(ctx.DEPTH_TEST)
         self.fx.draw(cam.view_proj, cam.view, flame_puffs(world), splash_drops(world))
 
@@ -312,7 +365,7 @@ class Scene3D:
         shapes.lift = 0.0
 
     def _set_common(self, prog: arcade.gl.Program, vp: np.ndarray, cam: Camera3D | None) -> None:
-        values: dict[str, object] = {"u_vp": tuple(vp.T.ravel()), "u_px": PX_PER_M, "u_anim": 1}
+        values: dict[str, object] = {"u_vp": tuple(vp.T.ravel()), "u_px": PX_PER_M, "u_anim": 1, "u_time": self.time}
         if cam is not None:
             values.update(u_albedo=2, u_mask=3, u_sun=tuple(SUN), u_eye=tuple(cam.eye), u_shadow=4,
                           u_light=tuple(self.light.T.ravel()), u_texel=1.0 / SHADOW_SIZE, **self.point_lights)
@@ -320,6 +373,31 @@ class Scene3D:
         for name, value in values.items():
             with contextlib.suppress(KeyError):   # униформы нет в шейдере (или компилятор выкинул неиспользуемую)
                 prog[name] = value
+
+    def _cutaway_props(self, world: World, props: list[tuple[M.StaticMesh, np.ndarray]],
+                       roof_alpha: dict[int, float]) -> list[tuple[M.StaticMesh, np.ndarray]]:
+        """У раскрытого дома верх стен исчезает полностью, остаётся тонкий низкий срез."""
+        if world.terrain is None:
+            return props
+        out = []
+        for mesh, inst in props:
+            name = self.shell_names.get(mesh)
+            if name is None:
+                out.append((mesh, inst))
+                continue
+            upper = shell_alpha(inst[:, :2], world.terrain, roof_alpha)
+            if (upper > 0.01).any():
+                high = inst[upper > 0.01].copy()
+                high[:, 7] *= upper[upper > 0.01]
+                out.append((mesh, high))
+            if (upper < 0.99).any():
+                low = inst[upper < 0.99].copy()
+                low[:, 7] *= 1 - upper[upper < 0.99]
+                out.append((self.cutaway[name], low))
+        groups: dict[M.StaticMesh, list[np.ndarray]] = {}
+        for mesh, inst in out:
+            groups.setdefault(mesh, []).append(inst)
+        return [(mesh, chunks[0] if len(chunks) == 1 else np.concatenate(chunks)) for mesh, chunks in groups.items()]
 
     def _shadow_pass(self, cam: Camera3D, props: dict, units: list) -> None:  # type: ignore[type-arg]
         target = cam.target
@@ -331,11 +409,15 @@ class Scene3D:
         ctx.enable(ctx.DEPTH_TEST)
         self._set_common(self.static_depth, self.light, None)
         self._set_common(self.skinned_depth, self.light, None)
-        self.static_depth["u_player"] = (1e9, 1e9)          # в тень — всё, растворение только для камеры
         for mesh, inst in props:
+            if mesh in self.no_shadow:
+                continue  # мелкий декор не перегружает карту теней
+            if (inst[:, 7] < 0.5).any():
+                inst = inst[inst[:, 7] >= 0.5]
             self.shadow_lod.get(mesh, mesh).draw(self.static_depth, inst)
         for name, inst, subs in units:
             if name in ("marine", "turret"):   # жуки — пятнами (_blob_shadows): толпа дорога для карты теней
+                self.skinned_depth["u_recoil"] = self.recoil if name == "marine" else 0.0
                 self.models[name].draw(self.skinned_depth, inst, subs, depth=True)
         ctx.disable(ctx.DEPTH_TEST)
         ctx.screen.use()
@@ -360,7 +442,7 @@ class Scene3D:
         key = (biome.tree, tuple(biome.tree_color))
         if key not in self.trees:
             files = sorted(MODELS.glob(f"flora_{biome.tree}_*.npz"))
-            meshes = [M.StaticMesh(self.ctx, [M.load_part(f, PX_PER_M)]) for f in files]
+            meshes = [M.StaticMesh(self.ctx, [M.load_part(f, PX_PER_M)], wind=biome.tree != "cactus") for f in files]
             self.trees[key] = meshes or [M.StaticMesh(self.ctx, tree_mesh(biome.tree, biome.tree_color))]
             # в карту теней — грубый силуэт: деревьев на экране сотни, а тень от лап и листьев не разглядеть
             proxy = M.StaticMesh(self.ctx, shadow_proxy(biome.tree))
@@ -432,8 +514,19 @@ class Scene3D:
             xs, ys, pos = cells(kind == k)
             if not len(xs):
                 continue
-            yaw = np.where(TerrainView._along_x(kind, xs - x0, ys - y0), 0.0, math.pi / 2) if k != T.WALL else 0.0
+            along_x = TerrainView._along_x(kind, xs - x0, ys - y0)
+            yaw = np.where(along_x, 0.0, math.pi / 2)
             out.append((self.props[name], M.instances(pos, yaw=yaw)))
+            if k == T.WALL:
+                # У тонкой угловой секции достраиваем половину перпендикулярной стены до соседней клетки.
+                lx, ly = xs - x0, ys - y0
+                wallish = np.isin(kind, (T.WALL, T.WINDOW, T.DOOR, T.OPEN_DOOR))
+                for step in (-1, 1):
+                    yy = np.clip(ly + step, 0, len(kind) - 1)
+                    corner = along_x & wallish[yy, lx] & (ly + step >= 0) & (ly + step < len(kind))
+                    if corner.any():
+                        offset = pos[corner] + (0, step * cell / 4)
+                        out.append((self.props[name], M.instances(offset, yaw=math.pi / 2, scale=(0.5, 1, 1))))
         # мосты: настил и перила (у клетки, идущей вдоль X, — поворот на 90°)
         xs, ys, pos = cells(kind == T.BRIDGE)
         if len(xs):
@@ -474,6 +567,8 @@ class Scene3D:
             pos = pos + (h[:, None] - 0.5) * 10                        # там же, где был плоский пень
             s = 0.9 + 0.3 * h
             out.append((stump, M.instances(pos, yaw=h * 6.28, scale=np.stack([s, s, s], 1))))
+        for name, values in level_details.placements(t, x0, y0, x1, y1).items():
+            out.append((self.details[name], M.instances(values[:, :2], yaw=values[:, 2])))
         return out
 
     def _items(self, world: World) -> list[tuple[M.StaticMesh, np.ndarray]]:
@@ -617,10 +712,14 @@ class Scene3D:
                 inst[:, 4], inst[:, 5], inst[:, 6] = clip_a, clip_b, frac
                 inst[:, 7] = sw.radius[ii] / r0
                 inst[:, 8:12] = tint
+                if k == TANKER:
+                    cracked = sw.armor[ii] <= 0
+                    inst[cracked, 8:12] = (0.36, 0.25, 0.16, 0.25)
                 burn = sw.burn_left[ii] > 0
                 inst[burn, 8:12] = (1.0, 0.5, 0.1, 0.4)
                 flash = sw.flash[ii] > 0
                 inst[flash, 8:12] = (1.0, 1.0, 1.0, 0.65)
+                inst[flash, 11] *= np.clip(sw.flash[ii[flash]] / HIT_FLASH, 0, 1)
                 groups[name].append(inst)
         for c in self.corpses:
             model = self.models[c.model]

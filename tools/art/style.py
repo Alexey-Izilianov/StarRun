@@ -162,6 +162,7 @@ class Model:
         self.objects = {}        # name -> итоговый объект группы
         self.extra = []          # объекты, которые экспортируются как есть (гусеницы со своим материалом)
         self.camo_scale = 6.0    # частота крапа на хитине (на метр): у мелких моделей крап мельче
+        self.realistic = False
         self.group("body", None, (0, 0, 0))
 
     def group(self, name, parent="body", pivot=(0, 0, 0)):
@@ -710,8 +711,9 @@ class Model:
         bev.inputs["Radius"].default_value = 0.035
 
         # рисованный объём: глубокие углы, тёмный низ и светлый верх, крупная пятнистость
-        shade = math_('MULTIPLY', remap(ao.outputs["AO"], 0.0, 1.0, 0.3, 1.0),
-                      remap(sep.outputs["Z"], zmin, zmax, 0.62, 1.15))
+        shade = math_('MULTIPLY', remap(ao.outputs["AO"], 0.0, 1.0, 0.45 if self.realistic else 0.3, 1.0),
+                      remap(sep.outputs["Z"], zmin, zmax, 0.88 if self.realistic else 0.62,
+                            1.03 if self.realistic else 1.15))
         shade = math_('MULTIPLY', shade, remap(noise.outputs["Fac"], 0.3, 0.7, 0.9, 1.08))
         base = vmath('SCALE', pal, scale=shade).outputs[0]
         # налёт грязи у земли пятнами
@@ -728,7 +730,7 @@ class Model:
         base = vmath('ADD', base, vmath('SCALE', dirt.outputs[0], scale=dirt_f).outputs[0]).outputs[0]
         # светлые тёплые рёбра (рисованный блик): нормаль со скруглением отличается от геометрической
         dot = vmath('DOT_PRODUCT', bev.outputs["Normal"], geo.outputs["Normal"]).outputs["Value"]
-        edge = remap(dot, 0.86, 0.995, 0.7, 0.0)
+        edge = remap(dot, 0.86, 0.995, 0.15 if self.realistic else 0.7, 0.0)
         hi = node("ShaderNodeVectorMath", operation='MULTIPLY_ADD')
         L.new(pal, hi.inputs[0])
         hi.inputs[1].default_value = (1.5, 1.5, 1.45)

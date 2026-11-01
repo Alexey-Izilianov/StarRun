@@ -36,6 +36,7 @@ ROOF_EDGE = (40, 36, 32)
 
 ALT_CELL = 360.0   # сетка пятен почвы другого оттенка
 ROOF_FADE = 6.0    # скорость, с которой крыша прячется и возвращается
+BUILDING_REVEAL = 180.0  # интерьер виден ещё до входа, с плавным переходом
 MARGIN = 2         # клеток за краем экрана — чтобы крупные кроны не обрезались
 
 # Находки: основной цвет и цвет детали
@@ -68,6 +69,7 @@ class TerrainView:
     def __init__(self, shapes: Shapes) -> None:
         self.flat_stumps = True         # в 3D пни и находки — моделями (Scene3D), здесь только кольцо находки
         self.flat_items = True
+        self.flat_ground = True
         self.c = shapes
         self.time = 0.0
         self.roof_alpha: dict[int, float] = {}
@@ -79,10 +81,13 @@ class TerrainView:
         t = world.terrain
         if t is None:
             return
-        ix, iy = (int(v) for v in world.player.pos // t.cell)
-        inside = int(t.building[iy, ix]) if 0 <= ix < t.n and 0 <= iy < t.n else -1
-        for bid in range(len(t.buildings)):
-            target = 0.0 if bid == inside else 1.0
+        px, py = world.player.pos
+        for bid, bd in enumerate(t.buildings):
+            dx = max(bd.x0 * t.cell - px, 0.0, px - (bd.x1 + 1) * t.cell)
+            dy = max(bd.y0 * t.cell - py, 0.0, py - (bd.y1 + 1) * t.cell)
+            distance = float(np.hypot(dx, dy))
+            k = float(np.clip((distance - 40) / BUILDING_REVEAL, 0, 1))
+            target = k * k * (3 - 2 * k)
             a = self.roof_alpha.get(bid, 1.0)
             step = ROOF_FADE * dt
             self.roof_alpha[bid] = min(target, a + step) if target > a else max(target, a - step)
@@ -143,11 +148,18 @@ class TerrainView:
             return
         c, cell = self.c, t.cell
         b = t.biome
-        self._alt_patches(self.view, b.ground_alt)
+        if self.flat_ground:
+            self._alt_patches(self.view, b.ground_alt)
         kind, soil, x0, y0 = self.win
+        path = t.paths[max(0, y0):min(t.n, y0 + kind.shape[0]), max(0, x0):min(t.n, x0 + kind.shape[1])]
+        py, px = np.nonzero(path)
+        if len(px) and self.flat_ground:
+            pos = self._centers(px + max(0, x0), py + max(0, y0), cell)
+            color = (130, 110, 77) if b.tree == "cactus" else (100, 91, 64)
+            c.add(pos, cell * 1.8, rgba(color, 0.3))
 
         mud = soil == T.MUD
-        if mud.any():
+        if self.flat_ground and mud.any():
             xs, ys = self._cells(mud, x0, y0)
             h = cell_hash(xs, ys, 1)
             c.add(self._centers(xs, ys, cell) + (h[:, None] - 0.5) * 10, cell * (1.45 + 0.3 * h), rgba(MUD, 0.55))
@@ -159,8 +171,9 @@ class TerrainView:
             xs, ys = self._cells(sand, x0, y0)
             h = cell_hash(xs, ys, 2)
             pos = self._centers(xs, ys, cell)
-            c.add(pos, cell * (1.75 + 0.2 * h), rgba(SAND_DARK, 0.6))  # тёмная кромка — граница опасного места
-            c.add(pos, cell * (1.5 + 0.2 * h), rgba(SAND, 0.95))
+            if self.flat_ground:
+                c.add(pos, cell * (1.75 + 0.2 * h), rgba(SAND_DARK, 0.6))  # тёмная кромка — граница опасного места
+                c.add(pos, cell * (1.5 + 0.2 * h), rgba(SAND, 0.95))
             pos, k = self._sprinkle(xs, ys, cell, 22, 0.15)  # воронки медленно «дышат» — это не простая земля
             ring = np.tile(rgba(SAND_DARK), (len(pos), 1))
             ring[:, 3] = 0.2 + 0.25 * (0.5 + 0.5 * np.sin(self.time * 1.5 + k * 6.28))
@@ -168,7 +181,7 @@ class TerrainView:
             c.add(pos, cell * (0.4 + 0.4 * k), ring, ring=0.12)
 
         water = kind == T.WATER
-        if water.any():
+        if self.flat_ground and water.any():
             xs, ys = self._cells(water, x0, y0)
             c.add(self._centers(xs, ys, cell), cell * 1.35, rgba(WATER))  # почти без захода на берег: суша не тонет
             pos, k = self._sprinkle(xs, ys, cell, 23, 0.2)
@@ -178,6 +191,7 @@ class TerrainView:
 
         self._bridges(kind, x0, y0, cell)
         self._floors(world)
+        self._entrances(t)
 
         stumps = kind == T.STUMP
         if stumps.any() and self.flat_stumps:
@@ -186,6 +200,23 @@ class TerrainView:
             pos = self._centers(xs, ys, cell) + (h[:, None] - 0.5) * 10
             c.add(pos, cell * 0.42, rgba(STUMP))
             c.add(pos, cell * 0.42, rgba(STUMP_RING), ring=0.3)
+
+    def _entrances(self, t: T.Terrain) -> None:
+        """Разметка порога с обеих сторон: входы и выходы читаются до открытия двери."""
+        for x, y in t.doors:
+            bid = int(t.building[y, x])
+            if self.roof_alpha.get(bid, 1.0) > 0.9 or not (0 <= bid < len(t.buildings)):
+                continue
+            bd = t.buildings[bid]
+            px, py = (x + 0.5) * t.cell, (y + 0.5) * t.cell
+            if not self._seen(px - 40, py - 40, px + 40, py + 40):
+                continue
+            color = (124, 196, 169, 210) if t.kind[y, x] != T.DOOR else (220, 177, 84, 210)
+            for side in (-1, 1):
+                if y in (bd.y0, bd.y1):
+                    self.c.rect(px - 16, py + side * 26 - 3, px + 16, py + side * 26 + 3, color)
+                else:
+                    self.c.rect(px + side * 26 - 3, py - 16, px + side * 26 + 3, py + 16, color)
 
     def pebble_mask(self, world: World, pos: np.ndarray) -> np.ndarray:
         """Камушки — только на открытой земле, не на воде, полах и в песке."""
@@ -273,6 +304,10 @@ class TerrainView:
         cell = t.cell
         for _, bd in self._buildings(t):
             self.c.rect(bd.x0 * cell, bd.y0 * cell, (bd.x1 + 1) * cell, (bd.y1 + 1) * cell, (*FLOOR, 255))
+            for x in range(bd.x0 + 2, bd.x1, 2):
+                self.c.rect(x * cell, (bd.y0 + 1) * cell, x * cell + 1, bd.y1 * cell, (35, 38, 37, 55))
+            for y in range(bd.y0 + 2, bd.y1, 2):
+                self.c.rect((bd.x0 + 1) * cell, y * cell, bd.x1 * cell, y * cell + 1, (35, 38, 37, 55))
 
     def _walls(self, kind: np.ndarray, x0: int, y0: int, t: T.Terrain) -> None:
         c, cell = self.c, t.cell

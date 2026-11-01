@@ -58,6 +58,7 @@ full_minute = 14
 share = 0.02
 
 [xp]
+rerolls = 3              # обновления карточек за весь забег (R)
 base = 5                    # опыт до 2-го уровня
 linear = 3
 quad = 0.3
